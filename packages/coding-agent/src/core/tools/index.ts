@@ -73,6 +73,16 @@ export {
 	type WriteToolOptions,
 	writeTool,
 } from "./write.js";
+export {
+	createExecCommandTool,
+	createWriteStdinTool,
+	type ExecCommandToolInput,
+	execCommandTool,
+	UnifiedExecManager,
+	type UnifiedExecToolOptions,
+	type WriteStdinToolInput,
+	writeStdinTool,
+} from "./unified-exec.js";
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { applyPatchTool, createApplyPatchTool } from "./apply-patch.js";

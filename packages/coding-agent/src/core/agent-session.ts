@@ -284,6 +284,24 @@ export class AgentSession {
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
+	private _garbleRetryCount = 0;
+	private static readonly MAX_GARBLE_RETRIES = 2;
+
+	/**
+	 * Detect garbled parallel tool calls: model emits multi_tool_use.parallel
+	 * format as plain text instead of structured tool calls.
+	 */
+	private _isGarbledToolCall(message: AssistantMessage): boolean {
+		if (message.stopReason !== "stop") return false;
+		if (message.content.some((b) => b.type === "toolCall")) return false;
+
+		const text = message.content
+			.filter((b): b is { type: "text"; text: string } => b.type === "text")
+			.map((b) => b.text)
+			.join("");
+
+		return /assistant\s+to=multi_tool_use/.test(text);
+	}
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -391,6 +409,13 @@ export class AgentSession {
 					this._retryAttempt = 0;
 					this._resolveRetry();
 				}
+				if (
+					assistantMsg.stopReason !== "error" &&
+					assistantMsg.stopReason !== "aborted" &&
+					!this._isGarbledToolCall(assistantMsg)
+				) {
+					this._garbleRetryCount = 0;
+				}
 			}
 		}
 
@@ -410,6 +435,19 @@ export class AgentSession {
 		if (event.type === "agent_end" && this._lastAssistantMessage) {
 			const msg = this._lastAssistantMessage;
 			this._lastAssistantMessage = undefined;
+
+			// Silent retry for garbled parallel tool calls
+			if (this._isGarbledToolCall(msg) && this._garbleRetryCount < AgentSession.MAX_GARBLE_RETRIES) {
+				this._garbleRetryCount++;
+				const messages = this.agent.state.messages;
+				if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+					this.agent.replaceMessages(messages.slice(0, -1));
+				}
+				setTimeout(() => {
+					this.agent.continue().catch(() => {});
+				}, 0);
+				return;
+			}
 
 			// Check for retryable errors first (overloaded, rate limit, server errors)
 			if (this._isRetryableError(msg)) {

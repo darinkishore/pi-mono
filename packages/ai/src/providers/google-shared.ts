@@ -151,7 +151,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						const part: Part = {
 							functionCall: {
 								name: block.name,
-								args: block.arguments ?? {},
+								args: (block.arguments as Record<string, unknown>) ?? {},
 								...(requiresToolCallId(model.id) ? { id: block.id } : {}),
 							},
 						};
