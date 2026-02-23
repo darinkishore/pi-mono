@@ -5,7 +5,8 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR } from "../config.js";
-import { allTools, type ToolName } from "../core/tools/index.js";
+import { CODEX_LOCAL_TOOL_NAMES } from "../core/codex_tools/tools.js";
+import { allTools } from "../core/tools/index.js";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -25,7 +26,7 @@ export interface Args {
 	session?: string;
 	sessionDir?: string;
 	models?: string[];
-	tools?: ToolName[];
+	tools?: string[];
 	noTools?: boolean;
 	extensions?: string[];
 	noExtensions?: boolean;
@@ -46,6 +47,9 @@ export interface Args {
 }
 
 const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const DEFAULT_TOOL_NAMES = ["read", "bash", "edit", "apply_patch", "write"] as const;
+const AVAILABLE_TOOL_NAMES = [...new Set([...Object.keys(allTools), ...CODEX_LOCAL_TOOL_NAMES])].sort();
+const AVAILABLE_TOOL_NAME_SET = new Set<string>(AVAILABLE_TOOL_NAMES);
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
@@ -96,13 +100,13 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			result.noTools = true;
 		} else if (arg === "--tools" && i + 1 < args.length) {
 			const toolNames = args[++i].split(",").map((s) => s.trim());
-			const validTools: ToolName[] = [];
+			const validTools: string[] = [];
 			for (const name of toolNames) {
-				if (name in allTools) {
-					validTools.push(name as ToolName);
+				if (AVAILABLE_TOOL_NAME_SET.has(name)) {
+					validTools.push(name);
 				} else {
 					console.error(
-						chalk.yellow(`Warning: Unknown tool "${name}". Valid tools: ${Object.keys(allTools).join(", ")}`),
+						chalk.yellow(`Warning: Unknown tool "${name}". Valid tools: ${AVAILABLE_TOOL_NAMES.join(", ")}`),
 					);
 				}
 			}
@@ -174,7 +178,7 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 }
 
 export function printHelp(): void {
-	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write tools
+	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, apply_patch, write tools
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [@files...] [messages...]
@@ -203,8 +207,8 @@ ${chalk.bold("Options:")}
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools                     Disable all built-in tools
-  --tools <tools>                Comma-separated list of tools to enable (default: read,bash,edit,write)
-                                 Available: read, bash, exec_command, write_stdin, edit, write, apply_patch (gpt-5.3-codex*), grep, find, ls
+  --tools <tools>                Comma-separated list of tools to enable (default: ${DEFAULT_TOOL_NAMES.join(",")})
+                                 Available: ${AVAILABLE_TOOL_NAMES.join(", ")}
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -298,16 +302,25 @@ ${chalk.bold("Environment Variables:")}
   PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
   PI_AI_ANTIGRAVITY_VERSION        - Override Antigravity User-Agent version (e.g., 1.23.0)
 
-${chalk.bold("Available Tools (default: read, bash, edit, write):")}
+${chalk.bold(`Available Tools (default: ${DEFAULT_TOOL_NAMES.join(", ")}):`)}
   read   - Read file contents
   bash   - Execute bash commands
-  exec_command - Run a command and optionally keep a session open
-  write_stdin  - Send input to an exec_command session
   edit   - Edit files with find/replace
+  apply_patch - Apply multi-file unified patches
   write  - Write files (creates/overwrites)
-  apply_patch - Apply freeform patches (gpt-5.3-codex* only)
   grep   - Search file contents (read-only, off by default)
   find   - Find files by glob pattern (read-only, off by default)
   ls     - List directory contents (read-only, off by default)
+  exec_command - Run shell commands in PTY with optional persistence
+  write_stdin - Send input to a running exec_command session
+  shell  - Run shell command and return output
+  local_shell - Alias for shell
+  container.exec - Alias for shell
+  shell_command - Run shell command (Codex-compatible schema)
+  grep_files - Search files with regex
+  read_file - Read a file with line range options
+  list_dir - List directory entries
+  view_image - Validate and attach local image path
+  test_sync_tool - Test synchronization utility for deterministic runs
 `);
 }

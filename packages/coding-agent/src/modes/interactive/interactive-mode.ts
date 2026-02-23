@@ -59,6 +59,7 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	ToolDefinition,
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { type AppAction, KeybindingsManager } from "../../core/keybindings.js";
@@ -127,6 +128,15 @@ type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
 };
+
+const CODEX_TOOL_RENDERER_NAMES = new Set([
+	"exec_command",
+	"write_stdin",
+	"shell_command",
+	"shell",
+	"local_shell",
+	"container.exec",
+]);
 
 /**
  * Options for InteractiveMode initialization.
@@ -1105,7 +1115,84 @@ export class InteractiveMode {
 	private getRegisteredToolDefinition(toolName: string) {
 		const tools = this.session.extensionRunner?.getAllRegisteredTools() ?? [];
 		const registeredTool = tools.find((t) => t.definition.name === toolName);
-		return registeredTool?.definition;
+		if (registeredTool?.definition) {
+			return registeredTool.definition;
+		}
+		return this.getCodexToolRendererDefinition(toolName);
+	}
+
+	private getCodexToolRendererDefinition(toolName: string): ToolDefinition | undefined {
+		if (!CODEX_TOOL_RENDERER_NAMES.has(toolName)) {
+			return undefined;
+		}
+
+		return {
+			name: toolName,
+			label: toolName,
+			description: "",
+			parameters: {} as any,
+			execute: async () => ({ content: [{ type: "text", text: "" }], details: {} }),
+			renderCall: (args, toolTheme) => this.renderCodexToolCall(toolName, args, toolTheme),
+			renderResult: (result, _options, toolTheme) => this.renderCodexToolResult(result, toolTheme),
+		} as ToolDefinition;
+	}
+
+	private renderCodexToolCall(toolName: string, args: unknown, toolTheme: Theme): Component {
+		const details: string[] = [];
+		const parsedArgs = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+
+		if (toolName === "write_stdin") {
+			const sessionId = parsedArgs.session_id;
+			const chars = parsedArgs.chars;
+			if (sessionId !== undefined) {
+				details.push(`session_id: ${String(sessionId)}`);
+			}
+			if (typeof chars === "string" && chars.length > 0) {
+				details.push(`chars: ${this.truncateCodexPreview(chars)}`);
+			}
+		} else {
+			const cmd =
+				typeof parsedArgs.cmd === "string"
+					? parsedArgs.cmd
+					: Array.isArray(parsedArgs.command)
+						? parsedArgs.command.join(" ")
+						: typeof parsedArgs.command === "string"
+							? parsedArgs.command
+							: undefined;
+			if (cmd && cmd.length > 0) {
+				details.push(`command: ${cmd}`);
+			}
+
+			const workdir = parsedArgs.workdir;
+			if (typeof workdir === "string" && workdir.length > 0) {
+				details.push(`workdir: ${workdir}`);
+			}
+		}
+
+		const content = [
+			toolTheme.fg("toolTitle", toolTheme.bold(toolName)),
+			...details.map((line) => toolTheme.fg("toolOutput", line)),
+		].join("\n");
+
+		return new Text(content, 0, 0);
+	}
+
+	private renderCodexToolResult(result: any, toolTheme: Theme): Component {
+		const textContent = Array.isArray(result?.content)
+			? result.content
+					.filter((block: any) => block?.type === "text" && typeof block.text === "string")
+					.map((block: any) => block.text as string)
+					.join("\n")
+			: "";
+		const output = textContent || "(no output)";
+		return new Text(toolTheme.fg("toolOutput", this.truncateCodexPreview(output, 6000)), 0, 0);
+	}
+
+	private truncateCodexPreview(text: string, maxLength = 400): string {
+		if (text.length <= maxLength) {
+			return text;
+		}
+		return `${text.slice(0, maxLength)}...`;
 	}
 
 	/**
@@ -1427,6 +1514,9 @@ export class InteractiveMode {
 				}
 				const result = setTheme(themeOrName, true);
 				if (result.success) {
+					if (this.settingsManager.getTheme() !== themeOrName) {
+						this.settingsManager.setTheme(themeOrName);
+					}
 					this.ui.requestRender();
 				}
 				return result;
@@ -2441,11 +2531,6 @@ export class InteractiveMode {
 			}
 			case "toolResult": {
 				// Tool results are rendered inline with tool calls, handled separately
-				break;
-			}
-			case "nativeCompaction":
-			case "nativeCompactionSummary": {
-				// Native compaction items are opaque — nothing to render
 				break;
 			}
 			default: {

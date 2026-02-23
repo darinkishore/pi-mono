@@ -300,55 +300,86 @@ async function executeToolCalls(
 ): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
 	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
 	const results: ToolResultMessage[] = [];
-	let steeringMessages: AgentMessage[] | undefined;
+	const steeringMessages: AgentMessage[] = [];
+	const batchAbortController = new AbortController();
+	const toolSignal = combineSignals(signal, batchAbortController.signal);
 
-	for (const toolCall of toolCalls) {
-		const tool = tools?.find((t) => t.name === toolCall.name);
+	const completions = await Promise.all(
+		toolCalls.map(async (toolCall) => {
+			const tool = tools?.find((t) => t.name === toolCall.name);
 
-		stream.push({
-			type: "tool_execution_start",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			args: toolCall.arguments,
-		});
-
-		let result: AgentToolResult<any>;
-		let isError = false;
-
-		try {
-			if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
-
-			const validatedArgs = validateToolArguments(tool, toolCall);
-
-			result = await tool.execute(toolCall.id, validatedArgs, signal, (partialResult) => {
-				stream.push({
-					type: "tool_execution_update",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					args: toolCall.arguments,
-					partialResult,
-				});
+			stream.push({
+				type: "tool_execution_start",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
 			});
-		} catch (e) {
+
+			let result: AgentToolResult<any>;
+			let isError = false;
+
+			try {
+				if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
+
+				const validatedArgs = validateToolArguments(tool, toolCall);
+				result = await tool.execute(toolCall.id, validatedArgs, toolSignal, (partialResult) => {
+					stream.push({
+						type: "tool_execution_update",
+						toolCallId: toolCall.id,
+						toolName: toolCall.name,
+						args: toolCall.arguments,
+						partialResult,
+					});
+				});
+			} catch (e) {
+				isError = true;
+				batchAbortController.abort();
+				result = {
+					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+					details: {},
+				};
+			}
+
+			return {
+				toolCall,
+				result,
+				isError,
+			};
+		}),
+	);
+
+	const failedCalls = completions.filter((completion) => completion.isError);
+	const hasBatchError = failedCalls.length > 0;
+	const failedToolsText = failedCalls.map((completion) => completion.toolCall.name).join(", ");
+
+	for (const completion of completions) {
+		let result = completion.result;
+		let isError = completion.isError;
+		if (hasBatchError && !isError) {
+			isError = true;
 			result = {
-				content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+				content: [
+					{
+						type: "text",
+						text: `Parallel tool batch failed because at least one tool call failed: ${failedToolsText}.`,
+					},
+				],
 				details: {},
 			};
-			isError = true;
 		}
 
 		stream.push({
 			type: "tool_execution_end",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
+			toolCallId: completion.toolCall.id,
+			toolName: completion.toolCall.name,
 			result,
 			isError,
 		});
 
 		const toolResultMessage: ToolResultMessage = {
 			role: "toolResult",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
+			toolCallId: completion.toolCall.id,
+			toolName: completion.toolCall.name,
 			content: result.content,
 			details: result.details,
 			isError,
@@ -360,12 +391,34 @@ async function executeToolCalls(
 		stream.push({ type: "message_end", message: toolResultMessage });
 	}
 
+	// Check for steering messages and queue them for the next model turn.
+	// Keep executing the current tool-call batch to preserve call/output pairing.
 	if (getSteeringMessages) {
 		const steering = await getSteeringMessages();
 		if (steering.length > 0) {
-			steeringMessages = steering;
+			steeringMessages.push(...steering);
 		}
 	}
 
-	return { toolResults: results, steeringMessages };
+	return { toolResults: results, steeringMessages: steeringMessages.length > 0 ? steeringMessages : undefined };
+}
+
+function combineSignals(first: AbortSignal | undefined, second: AbortSignal | undefined): AbortSignal | undefined {
+	if (!first) return second;
+	if (!second) return first;
+	if (first.aborted || second.aborted) {
+		const controller = new AbortController();
+		controller.abort();
+		return controller.signal;
+	}
+
+	const controller = new AbortController();
+	const onAbort = () => {
+		controller.abort();
+		first.removeEventListener("abort", onAbort);
+		second.removeEventListener("abort", onAbort);
+	};
+	first.addEventListener("abort", onAbort, { once: true });
+	second.addEventListener("abort", onAbort, { once: true });
+	return controller.signal;
 }

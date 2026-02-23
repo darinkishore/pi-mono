@@ -169,6 +169,40 @@ describe("buildSessionContext", () => {
 			expect(ctx.messages).toHaveLength(4);
 			expect((ctx.messages[0] as any).summary).toContain("Second summary");
 		});
+
+		it("prefers replacement messages when compaction provides replacement context", () => {
+			const replacedUser = msg("ru", null, "user", "replacement user").message;
+			const replacedAssistant = msg("ra", "ru", "assistant", "replacement assistant").message;
+			const remoteCompaction: CompactionEntry = {
+				type: "compaction",
+				id: "5",
+				parentId: "4",
+				timestamp: "2025-01-01T00:00:00Z",
+				summary: "legacy summary should not be injected",
+				firstKeptEntryId: "3",
+				tokensBefore: 1000,
+				details: {
+					replacementMessages: [replacedUser, replacedAssistant],
+				},
+			};
+
+			const entries: SessionEntry[] = [
+				msg("1", null, "user", "first"),
+				msg("2", "1", "assistant", "response1"),
+				msg("3", "2", "user", "second"),
+				msg("4", "3", "assistant", "response2"),
+				remoteCompaction,
+				msg("6", "5", "user", "after compact"),
+			];
+			const ctx = buildSessionContext(entries);
+
+			expect(ctx.messages).toHaveLength(3);
+			expect(ctx.messages[0].role).toBe("user");
+			expect((ctx.messages[0] as any).content).toBe("replacement user");
+			expect(ctx.messages[1].role).toBe("assistant");
+			expect((ctx.messages[1] as any).content[0].text).toBe("replacement assistant");
+			expect((ctx.messages[2] as any).content).toBe("after compact");
+		});
 	});
 
 	describe("with branches", () => {

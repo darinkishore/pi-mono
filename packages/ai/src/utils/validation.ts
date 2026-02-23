@@ -51,6 +51,12 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
  * @throws Error with formatted message if validation fails
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
+	// Custom/freeform tools are validated by grammar at the model/provider layer.
+	// Their arguments may be raw strings instead of JSON objects.
+	if (tool.type === "custom" || tool.type === "apply_patch") {
+		return toolCall.arguments;
+	}
+
 	// Skip validation in browser extension environment (CSP restrictions prevent AJV from working)
 	if (!ajv || isBrowserExtension) {
 		// Trust the LLM's output without validation

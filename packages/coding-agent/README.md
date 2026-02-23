@@ -1,6 +1,6 @@
 # 🏖️ OSS Vacation
 
-**Issue tracker and PRs reopen February 23, 2026.**
+**Issue tracker and PRs reopen March 2, 2026.**
 
 All PRs will be auto-closed until then. Approved contributors can submit PRs after vacation without reapproval. For support, join [Discord](https://discord.com/invite/3cU7Bz4UPx).
 
@@ -188,7 +188,7 @@ See `/hotkeys` for the full list. Customize via `~/.pi/agent/keybindings.json`. 
 
 Submit messages while the agent is working:
 
-- **Enter** queues a *steering* message, delivered after current tool execution (interrupts remaining tools)
+- **Enter** queues a *steering* message, delivered before the next LLM call after the current turn completes
 - **Alt+Enter** queues a *follow-up* message, delivered only after the agent finishes all work
 - **Escape** aborts and restores queued messages to editor
 - **Alt+Up** retrieves queued messages back to editor

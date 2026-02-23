@@ -15,6 +15,7 @@ import { listModels } from "./cli/list-models.js";
 import { selectSession } from "./cli/session-picker.js";
 import { APP_NAME, getAgentDir, getModelsPath, VERSION } from "./config.js";
 import { AuthStorage } from "./core/auth-storage.js";
+import { createCodexLocalTools } from "./core/codex_tools/tools.js";
 import { DEFAULT_THINKING_LEVEL } from "./core/defaults.js";
 import { exportFromFile } from "./core/export-html/index.js";
 import type { LoadExtensionsResult } from "./core/extensions/index.js";
@@ -27,7 +28,7 @@ import { type CreateAgentSessionOptions, createAgentSession } from "./core/sdk.j
 import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, time } from "./core/timings.js";
-import { allTools } from "./core/tools/index.js";
+import { allTools, type Tool } from "./core/tools/index.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.js";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
@@ -496,16 +497,28 @@ function buildSessionOptions(
 	// (handled by caller before createAgentSession)
 
 	// Tools
+	let codexTools: Record<string, Tool> | undefined;
+	const resolveTool = (name: string): Tool | undefined => {
+		const baseTool = (allTools as Record<string, Tool>)[name];
+		if (baseTool) return baseTool;
+		if (!codexTools) {
+			codexTools = createCodexLocalTools(process.cwd()) as Record<string, Tool>;
+		}
+		return codexTools[name];
+	};
+
 	if (parsed.noTools) {
 		// --no-tools: start with no built-in tools
 		// --tools can still add specific ones back
 		if (parsed.tools && parsed.tools.length > 0) {
-			options.tools = parsed.tools.map((name) => allTools[name]);
+			options.tools = parsed.tools
+				.map((name) => resolveTool(name))
+				.filter((tool): tool is Tool => tool !== undefined);
 		} else {
 			options.tools = [];
 		}
 	} else if (parsed.tools) {
-		options.tools = parsed.tools.map((name) => allTools[name]);
+		options.tools = parsed.tools.map((name) => resolveTool(name)).filter((tool): tool is Tool => tool !== undefined);
 	}
 
 	return { options, cliThinkingFromModel };

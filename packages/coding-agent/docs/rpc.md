@@ -47,7 +47,7 @@ With images:
 {"type": "prompt", "message": "New instruction", "streamingBehavior": "steer"}
 ```
 
-- `"steer"`: Interrupt the agent mid-run. Message is delivered after current tool execution, remaining tools are skipped.
+- `"steer"`: Interrupt the agent mid-run. Message is delivered before the next LLM call after the current turn completes.
 - `"followUp"`: Wait until the agent finishes. Message is delivered only when agent stops.
 
 If the agent is streaming and no `streamingBehavior` is specified, the command returns an error.
@@ -65,7 +65,7 @@ The `images` field is optional. Each image uses `ImageContent` format: `{"type":
 
 #### steer
 
-Queue a steering message to interrupt the agent mid-run. Delivered after current tool execution, remaining tools are skipped. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a steering message to interrupt the agent mid-run. Delivered before the next LLM call after the current turn completes. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
 
 ```json
 {"type": "steer", "message": "Stop and do this instead"}

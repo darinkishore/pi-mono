@@ -242,8 +242,8 @@ export class ToolExecutionComponent extends Container {
 				? (text: string) => theme.bg("toolErrorBg", text)
 				: (text: string) => theme.bg("toolSuccessBg", text);
 
-		// Use built-in rendering for built-in tools (or overrides without custom renderers)
-		if (this.shouldUseBuiltInRenderer()) {
+		// Use built-in rendering for built-in tools and unknown tools without custom definitions.
+		if (this.shouldUseBuiltInRenderer() || !this.toolDefinition) {
 			if (this.toolName === "bash") {
 				// Bash uses Box with visual line truncation
 				this.contentBox.setBgFn(bgFn);
@@ -254,7 +254,7 @@ export class ToolExecutionComponent extends Container {
 				this.contentText.setCustomBgFn(bgFn);
 				this.contentText.setText(this.formatToolExecution());
 			}
-		} else if (this.toolDefinition) {
+		} else {
 			// Custom tools use Box for flexible component rendering
 			this.contentBox.setBgFn(bgFn);
 			this.contentBox.clear();
@@ -591,6 +591,31 @@ export class ToolExecutionComponent extends Container {
 					text += `\n\n${theme.fg("error", this.editDiffPreview.error)}`;
 				} else if (this.editDiffPreview.diff) {
 					text += `\n\n${renderDiff(this.editDiffPreview.diff, { filePath: rawPath ?? undefined })}`;
+				}
+			}
+		} else if (this.toolName === "apply_patch") {
+			text = `${theme.fg("toolTitle", theme.bold("apply_patch"))}`;
+
+			if (this.result?.isError) {
+				const errorText = this.getTextOutput();
+				if (errorText) {
+					text += `\n\n${theme.fg("error", errorText)}`;
+				}
+			} else if (this.result?.details?.diff) {
+				text += `\n\n${renderDiff(this.result.details.diff)}`;
+			} else {
+				const patchArg = typeof this.args === "string" ? this.args : str(this.args?.patch);
+				if (patchArg === null) {
+					text += `\n\n${theme.fg("error", "[invalid arg - expected patch text]")}`;
+				} else if (patchArg) {
+					const lines = patchArg.split("\n");
+					const maxLines = this.expanded ? lines.length : 20;
+					const displayLines = lines.slice(0, maxLines).map((line) => theme.fg("toolOutput", line));
+					const remaining = lines.length - maxLines;
+					text += `\n\n${displayLines.join("\n")}`;
+					if (remaining > 0) {
+						text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
+					}
 				}
 			}
 		} else if (this.toolName === "ls") {
