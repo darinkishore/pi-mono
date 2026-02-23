@@ -208,7 +208,7 @@ ${chalk.bold("Options:")}
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools                     Disable all built-in tools
   --tools <tools>                Comma-separated list of tools to enable (default: read,bash,edit,write)
-                                 Available: read, bash, edit, write, grep, find, ls
+                                 Available: read, bash, exec_command, write_stdin, edit, write, apply_patch (gpt-5.3-codex*), grep, find, ls
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -308,8 +308,11 @@ ${chalk.bold("Environment Variables:")}
 ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   read   - Read file contents
   bash   - Execute bash commands
+  exec_command - Run a command and optionally keep a session open
+  write_stdin  - Send input to an exec_command session
   edit   - Edit files with find/replace
   write  - Write files (creates/overwrites)
+  apply_patch - Apply freeform patches (gpt-5.3-codex* only)
   grep   - Search file contents (read-only, off by default)
   find   - Find files by glob pattern (read-only, off by default)
   ls     - List directory contents (read-only, off by default)

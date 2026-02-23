@@ -9,22 +9,28 @@ import { formatSkillsForPrompt, type Skill } from "./skills.js";
 const toolDescriptions: Record<string, string> = {
 	read: "Read file contents",
 	bash: "Execute bash commands (ls, grep, find, etc.)",
+	exec_command: "Run a shell command with session-based streaming output",
+	write_stdin: "Write to an existing exec_command session",
+	shell: "Run a shell command via argv array",
+	shell_command: "Run a shell command string",
 	edit: "Make surgical edits to files (find exact text and replace)",
+	apply_patch: "Apply multi-file patches in unified diff grammar format",
 	write: "Create or overwrite files",
 	grep: "Search file contents for patterns (respects .gitignore)",
+	grep_files: "Find files with content matching a regex pattern",
 	find: "Find files by glob pattern (respects .gitignore)",
 	ls: "List directory contents",
+	read_file: "Read a local file by line slice or indentation-aware block mode",
+	list_dir: "List entries in a local directory",
+	view_image: "Attach and inspect a local image path",
+	test_sync_tool: "Internal synchronization helper for deterministic tool tests",
 };
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
-	/** Tools to include in prompt. Default: [read, bash, edit, write] */
+	/** Tools to include in prompt. Default: [read, bash, edit, apply_patch, write] */
 	selectedTools?: string[];
-	/** Optional one-line tool snippets keyed by tool name. */
-	toolSnippets?: Record<string, string>;
-	/** Additional guideline bullets appended to the default system prompt guidelines. */
-	promptGuidelines?: string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
 	/** Working directory. Default: process.cwd() */
@@ -40,17 +46,24 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const {
 		customPrompt,
 		selectedTools,
-		toolSnippets,
-		promptGuidelines,
 		appendSystemPrompt,
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
 	} = options;
 	const resolvedCwd = cwd ?? process.cwd();
-	const promptCwd = resolvedCwd.replace(/\\/g, "/");
 
-	const date = new Date().toISOString().slice(0, 10);
+	const now = new Date();
+	const dateTime = now.toLocaleString("en-US", {
+		weekday: "long",
+		year: "numeric",
+		month: "long",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+		timeZoneName: "short",
+	});
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
 
@@ -79,9 +92,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			prompt += formatSkillsForPrompt(skills);
 		}
 
-		// Add date and working directory last
-		prompt += `\nCurrent date: ${date}`;
-		prompt += `\nCurrent working directory: ${promptCwd}`;
+		// Add date/time and working directory last
+		prompt += `\nCurrent date and time: ${dateTime}`;
+		prompt += `\nCurrent working directory: ${resolvedCwd}`;
 
 		return prompt;
 	}
@@ -91,29 +104,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const docsPath = getDocsPath();
 	const examplesPath = getExamplesPath();
 
-	// Build tools list based on selected tools.
-	// Built-ins use toolDescriptions. Custom tools can provide one-line snippets.
-	const tools = selectedTools || ["read", "bash", "edit", "write"];
-	const toolsList =
-		tools.length > 0
-			? tools
-					.map((name) => {
-						const snippet = toolSnippets?.[name] ?? toolDescriptions[name] ?? name;
-						return `- ${name}: ${snippet}`;
-					})
-					.join("\n")
-			: "(none)";
+	// Build tools list based on selected tools (only built-in tools with known descriptions)
+	const tools = (selectedTools || ["read", "bash", "edit", "apply_patch", "write"]).filter(
+		(t) => t in toolDescriptions,
+	);
+	const toolsList = tools.length > 0 ? tools.map((t) => `- ${t}: ${toolDescriptions[t]}`).join("\n") : "(none)";
 
 	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];
-	const guidelinesSet = new Set<string>();
-	const addGuideline = (guideline: string): void => {
-		if (guidelinesSet.has(guideline)) {
-			return;
-		}
-		guidelinesSet.add(guideline);
-		guidelinesList.push(guideline);
-	};
 
 	const hasBash = tools.includes("bash");
 	const hasEdit = tools.includes("edit");
@@ -125,43 +123,36 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	// File exploration guidelines
 	if (hasBash && !hasGrep && !hasFind && !hasLs) {
-		addGuideline("Use bash for file operations like ls, rg, find");
+		guidelinesList.push("Use bash for file operations like ls, rg, find");
 	} else if (hasBash && (hasGrep || hasFind || hasLs)) {
-		addGuideline("Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)");
+		guidelinesList.push("Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)");
 	}
 
 	// Read before edit guideline
 	if (hasRead && hasEdit) {
-		addGuideline("Use read to examine files before editing. You must use this tool instead of cat or sed.");
+		guidelinesList.push("Use read to examine files before editing. You must use this tool instead of cat or sed.");
 	}
 
 	// Edit guideline
 	if (hasEdit) {
-		addGuideline("Use edit for precise changes (old text must match exactly)");
+		guidelinesList.push("Use edit for precise changes (old text must match exactly)");
 	}
 
 	// Write guideline
 	if (hasWrite) {
-		addGuideline("Use write only for new files or complete rewrites");
+		guidelinesList.push("Use write only for new files or complete rewrites");
 	}
 
 	// Output guideline (only when actually writing or executing)
 	if (hasEdit || hasWrite) {
-		addGuideline(
+		guidelinesList.push(
 			"When summarizing your actions, output plain text directly - do NOT use cat or bash to display what you did",
 		);
 	}
 
-	for (const guideline of promptGuidelines ?? []) {
-		const normalized = guideline.trim();
-		if (normalized.length > 0) {
-			addGuideline(normalized);
-		}
-	}
-
 	// Always include these
-	addGuideline("Be concise in your responses");
-	addGuideline("Show file paths clearly when working with files");
+	guidelinesList.push("Be concise in your responses");
+	guidelinesList.push("Show file paths clearly when working with files");
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
@@ -201,9 +192,9 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += formatSkillsForPrompt(skills);
 	}
 
-	// Add date and working directory last
-	prompt += `\nCurrent date: ${date}`;
-	prompt += `\nCurrent working directory: ${promptCwd}`;
+	// Add date/time and working directory last
+	prompt += `\nCurrent date and time: ${dateTime}`;
+	prompt += `\nCurrent working directory: ${resolvedCwd}`;
 
 	return prompt;
 }

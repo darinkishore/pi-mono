@@ -2499,6 +2499,11 @@ export class InteractiveMode {
 				// Tool results are rendered inline with tool calls, handled separately
 				break;
 			}
+			case "nativeCompaction":
+			case "nativeCompactionSummary": {
+				// Native compaction items are opaque — nothing to render
+				break;
+			}
 			default: {
 				const _exhaustive: never = message;
 			}

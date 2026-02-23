@@ -160,7 +160,9 @@ export interface ToolCall {
 	type: "toolCall";
 	id: string;
 	name: string;
-	arguments: Record<string, any>;
+	arguments: unknown;
+	/** Original provider tool type, when available (e.g. custom tool calls in Responses API). */
+	toolType?: "function" | "custom" | "apply_patch";
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 }
 
@@ -213,10 +215,27 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
 import type { TSchema } from "@sinclair/typebox";
 
+export type CustomToolFormat =
+	| {
+			type: "text";
+	  }
+	| {
+			type: "grammar";
+			syntax: "lark" | "regex";
+			definition: string;
+	  };
+
 export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;
 	description: string;
 	parameters: TParameters;
+	/**
+	 * Tool invocation mode for providers that support non-function tools.
+	 * Defaults to "function" when omitted.
+	 */
+	type?: "function" | "custom" | "apply_patch";
+	/** Input format for custom tools (OpenAI Responses API). */
+	format?: CustomToolFormat;
 }
 
 export interface Context {

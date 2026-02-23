@@ -33,6 +33,7 @@ import {
 export interface CompactionDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	replacementMessages?: AgentMessage[];
 }
 
 /**

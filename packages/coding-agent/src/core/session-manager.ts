@@ -74,6 +74,10 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	fromHook?: boolean;
 }
 
+interface CompactionReplacementDetails {
+	replacementMessages?: AgentMessage[];
+}
+
 export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
 	type: "branch_summary";
 	fromId: string;
@@ -381,11 +385,24 @@ export function buildSessionContext(
 	};
 
 	if (compaction) {
-		// Emit summary first
-		messages.push(createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp));
-
 		// Find compaction index in path
 		const compactionIdx = path.findIndex((e) => e.type === "compaction" && e.id === compaction.id);
+		const details = compaction.details as CompactionReplacementDetails | undefined;
+		const replacementMessages = details?.replacementMessages;
+
+		if (Array.isArray(replacementMessages) && replacementMessages.length > 0) {
+			messages.push(...replacementMessages);
+
+			// Emit messages after compaction
+			for (let i = compactionIdx + 1; i < path.length; i++) {
+				const entry = path[i];
+				appendMessage(entry);
+			}
+			return { messages, thinkingLevel, model };
+		}
+
+		// Emit summary first
+		messages.push(createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp));
 
 		// Emit kept messages (before compaction, starting from firstKeptEntryId)
 		let foundFirstKept = false;

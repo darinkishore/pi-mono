@@ -16,8 +16,10 @@ import { SettingsManager } from "./settings-manager.js";
 import { time } from "./timings.js";
 import {
 	allTools,
+	applyPatchTool,
 	bashTool,
 	codingTools,
+	createApplyPatchTool,
 	createBashTool,
 	createCodingTools,
 	createEditTool,
@@ -44,7 +46,7 @@ export interface CreateAgentSessionOptions {
 	/** Global config directory. Default: ~/.pi/agent */
 	agentDir?: string;
 
-	/** Auth storage for credentials. Default: AuthStorage.create(agentDir/auth.json) */
+	/** Auth storage for credentials. Default: new AuthStorage(agentDir/auth.json) */
 	authStorage?: AuthStorage;
 	/** Model registry. Default: new ModelRegistry(authStorage, agentDir/models.json) */
 	modelRegistry?: ModelRegistry;
@@ -56,7 +58,7 @@ export interface CreateAgentSessionOptions {
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
-	/** Built-in tools to use. Default: codingTools [read, bash, edit, write] */
+	/** Built-in tools to use. Default: codingTools [read, bash, edit, apply_patch, write] */
 	tools?: Tool[];
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
@@ -102,6 +104,7 @@ export {
 	readTool,
 	bashTool,
 	editTool,
+	applyPatchTool,
 	writeTool,
 	grepTool,
 	findTool,
@@ -115,6 +118,7 @@ export {
 	createReadTool,
 	createBashTool,
 	createEditTool,
+	createApplyPatchTool,
 	createWriteTool,
 	createGrepTool,
 	createFindTool,
@@ -170,7 +174,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Use provided or create AuthStorage and ModelRegistry
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
-	const authStorage = options.authStorage ?? AuthStorage.create(authPath);
+	const authStorage = options.authStorage ?? new AuthStorage(authPath);
 	const modelRegistry = options.modelRegistry ?? new ModelRegistry(authStorage, modelsPath);
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
@@ -238,7 +242,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = "off";
 	}
 
-	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write"];
+	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "apply_patch", "write"];
 	const initialActiveToolNames: ToolName[] = options.tools
 		? options.tools.map((t) => t.name).filter((n): n is ToolName => n in allTools)
 		: defaultActiveToolNames;

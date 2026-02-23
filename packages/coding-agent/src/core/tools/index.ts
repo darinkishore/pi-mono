@@ -1,4 +1,12 @@
 export {
+	type ApplyPatchOperations,
+	type ApplyPatchToolDetails,
+	type ApplyPatchToolInput,
+	type ApplyPatchToolOptions,
+	applyPatchTool,
+	createApplyPatchTool,
+} from "./apply-patch.js";
+export {
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -67,6 +75,7 @@ export {
 } from "./write.js";
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { applyPatchTool, createApplyPatchTool } from "./apply-patch.js";
 import { type BashToolOptions, bashTool, createBashTool } from "./bash.js";
 import { createEditTool, editTool } from "./edit.js";
 import { createFindTool, findTool } from "./find.js";
@@ -79,7 +88,7 @@ import { createWriteTool, writeTool } from "./write.js";
 export type Tool = AgentTool<any>;
 
 // Default tools for full access mode (using process.cwd())
-export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool];
+export const codingTools: Tool[] = [readTool, bashTool, editTool, applyPatchTool, writeTool];
 
 // Read-only tools for exploration without modification (using process.cwd())
 export const readOnlyTools: Tool[] = [readTool, grepTool, findTool, lsTool];
@@ -89,6 +98,7 @@ export const allTools = {
 	read: readTool,
 	bash: bashTool,
 	edit: editTool,
+	apply_patch: applyPatchTool,
 	write: writeTool,
 	grep: grepTool,
 	find: findTool,
@@ -112,6 +122,7 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 		createReadTool(cwd, options?.read),
 		createBashTool(cwd, options?.bash),
 		createEditTool(cwd),
+		createApplyPatchTool(cwd),
 		createWriteTool(cwd),
 	];
 }
@@ -131,6 +142,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		read: createReadTool(cwd, options?.read),
 		bash: createBashTool(cwd, options?.bash),
 		edit: createEditTool(cwd),
+		apply_patch: createApplyPatchTool(cwd),
 		write: createWriteTool(cwd),
 		grep: createGrepTool(cwd),
 		find: createFindTool(cwd),
