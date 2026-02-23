@@ -524,7 +524,7 @@ function convertMessages(
 							break;
 						case "toolCall":
 							contentBlocks.push({
-								toolUse: { toolUseId: c.id, name: c.name, input: c.arguments },
+								toolUse: { toolUseId: c.id, name: c.name, input: c.arguments as never },
 							});
 							break;
 						case "thinking":

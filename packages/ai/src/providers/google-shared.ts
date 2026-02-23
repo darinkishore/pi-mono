@@ -156,7 +156,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						...(effectiveSignature && { thoughtSignature: effectiveSignature }),
 					};
 					parts.push(part);
-				}
+					}
 			}
 
 			if (parts.length === 0) continue;

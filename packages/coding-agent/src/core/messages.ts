@@ -66,6 +66,19 @@ export interface CompactionSummaryMessage {
 	timestamp: number;
 }
 
+/**
+ * Opaque native compaction markers — no content to render or convert.
+ */
+export interface NativeCompactionMessage {
+	role: "nativeCompaction";
+	timestamp: number;
+}
+
+export interface NativeCompactionSummaryMessage {
+	role: "nativeCompactionSummary";
+	timestamp: number;
+}
+
 // Extend CustomAgentMessages via declaration merging
 declare module "@mariozechner/pi-agent-core" {
 	interface CustomAgentMessages {
@@ -73,6 +86,8 @@ declare module "@mariozechner/pi-agent-core" {
 		custom: CustomMessage;
 		branchSummary: BranchSummaryMessage;
 		compactionSummary: CompactionSummaryMessage;
+		nativeCompaction: NativeCompactionMessage;
+		nativeCompactionSummary: NativeCompactionSummaryMessage;
 	}
 }
 
@@ -181,6 +196,9 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						],
 						timestamp: m.timestamp,
 					};
+				case "nativeCompaction":
+				case "nativeCompactionSummary":
+					return undefined;
 				case "user":
 				case "assistant":
 				case "toolResult":
