@@ -395,16 +395,18 @@ function mapThinkingLevelToEffort(level: SimpleStreamOptions["reasoning"]): "low
 
 /**
  * Resolve cache retention preference.
- * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
+ * Defaults to "long" for better cache reuse across turns.
+ * PI_CACHE_RETENTION env var can override (e.g. "none" or "short").
  */
 function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention {
 	if (cacheRetention) {
 		return cacheRetention;
 	}
-	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION === "long") {
-		return "long";
+	const env = typeof process !== "undefined" ? process.env.PI_CACHE_RETENTION : undefined;
+	if (env === "short" || env === "none") {
+		return env;
 	}
-	return "short";
+	return "long";
 }
 
 /**
