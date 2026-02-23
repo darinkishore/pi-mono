@@ -385,8 +385,9 @@ export class ToolExecutionComponent extends Container {
 		let customRendererHasContent = false;
 		this.hideComponent = false;
 
-		// Use built-in rendering for built-in tools (or overrides without custom renderers)
-		if (useBuiltInRenderer) {
+		// Use built-in rendering for built-in tools (or overrides without custom renderers),
+		// and fall back to generic built-in rendering for unknown tools without definitions.
+		if (useBuiltInRenderer || !this.toolDefinition) {
 			if (this.toolName === "bash") {
 				// Bash uses Box with visual line truncation
 				this.contentBox.setBgFn(bgFn);
@@ -397,7 +398,7 @@ export class ToolExecutionComponent extends Container {
 				this.contentText.setCustomBgFn(bgFn);
 				this.contentText.setText(this.formatToolExecution());
 			}
-		} else if (this.toolDefinition) {
+		} else {
 			// Custom tools use Box for flexible component rendering
 			this.contentBox.setBgFn(bgFn);
 			this.contentBox.clear();
@@ -441,21 +442,17 @@ export class ToolExecutionComponent extends Container {
 						customRendererHasContent = true;
 					}
 				}
-			} else if (this.result) {
-				// Has result but no custom renderResult
-				const output = this.getTextOutput();
-				if (output) {
-					this.contentBox.addChild(new Text(theme.fg("toolOutput", output), 0, 0));
-					customRendererHasContent = true;
+				} else if (this.result) {
+					// Has result but no custom renderResult
+					const output = this.getTextOutput();
+					if (output) {
+						this.contentBox.addChild(new Text(theme.fg("toolOutput", output), 0, 0));
+						customRendererHasContent = true;
+					}
 				}
 			}
-		} else {
-			// Unknown tool with no registered definition - show generic fallback
-			this.contentText.setCustomBgFn(bgFn);
-			this.contentText.setText(this.formatToolExecution());
-		}
 
-		// Handle images (same for both custom and built-in)
+			// Handle images (same for both custom and built-in)
 		for (const img of this.imageComponents) {
 			this.removeChild(img);
 		}
@@ -768,6 +765,31 @@ export class ToolExecutionComponent extends Container {
 					text += `\n\n${theme.fg("error", this.editDiffPreview.error)}`;
 				} else if (this.editDiffPreview.diff) {
 					text += `\n\n${renderDiff(this.editDiffPreview.diff, { filePath: rawPath ?? undefined })}`;
+				}
+			}
+		} else if (this.toolName === "apply_patch") {
+			text = `${theme.fg("toolTitle", theme.bold("apply_patch"))}`;
+
+			if (this.result?.isError) {
+				const errorText = this.getTextOutput();
+				if (errorText) {
+					text += `\n\n${theme.fg("error", errorText)}`;
+				}
+			} else if (this.result?.details?.diff) {
+				text += `\n\n${renderDiff(this.result.details.diff)}`;
+			} else {
+				const patchArg = typeof this.args === "string" ? this.args : str(this.args?.patch);
+				if (patchArg === null) {
+					text += `\n\n${theme.fg("error", "[invalid arg - expected patch text]")}`;
+				} else if (patchArg) {
+					const lines = patchArg.split("\n");
+					const maxLines = this.expanded ? lines.length : 20;
+					const displayLines = lines.slice(0, maxLines).map((line) => theme.fg("toolOutput", line));
+					const remaining = lines.length - maxLines;
+					text += `\n\n${displayLines.join("\n")}`;
+					if (remaining > 0) {
+						text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
+					}
 				}
 			}
 		} else if (this.toolName === "ls") {

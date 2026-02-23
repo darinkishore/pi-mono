@@ -78,7 +78,7 @@ interface AgentSession {
   prompt(text: string, options?: PromptOptions): Promise<void>;
   
   // Queue messages during streaming
-  steer(text: string): Promise<void>;    // Interrupt: delivered after current tool, skips remaining
+  steer(text: string): Promise<void>;    // Interrupt: delivered before the next model call after current turn
   followUp(text: string): Promise<void>; // Wait: delivered only when agent finishes
   
   // Subscribe to events (returns unsubscribe function)
@@ -150,7 +150,7 @@ await session.prompt("After you're done, also check X", { streamingBehavior: "fo
 For explicit queueing during streaming:
 
 ```typescript
-// Interrupt the agent (delivered after current tool, skips remaining tools)
+// Interrupt the agent (delivered before the next model call after the current turn)
 await session.steer("New instruction");
 
 // Wait for agent to finish (delivered only when agent stops)

@@ -413,7 +413,6 @@ export function resolveCliModel(options: {
 			return { model: fallbackModel, thinkingLevel: undefined, warning: fallbackWarning, error: undefined };
 		}
 	}
-
 	const display = provider ? `${provider}/${pattern}` : cliModel;
 	return {
 		model: undefined,

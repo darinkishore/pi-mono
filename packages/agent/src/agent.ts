@@ -305,7 +305,7 @@ export class Agent {
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
-	 * Delivered after the current assistant tool-call batch completes.
+	 * Delivered before the next LLM call after the current turn completes.
 	 */
 	steer(m: AgentMessage) {
 		this.steeringQueue.push(m);
