@@ -83,6 +83,110 @@ export interface CreateAgentSessionResult {
 	modelFallbackMessage?: string;
 }
 
+const TOOL_RESULT_CONTEXT_MAX_BYTES = 10_000;
+
+function sliceUtf8FromStart(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) {
+		return "";
+	}
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) {
+		return value;
+	}
+
+	let out = "";
+	let used = 0;
+	for (const ch of value) {
+		const charBytes = Buffer.byteLength(ch, "utf8");
+		if (used + charBytes > maxBytes) {
+			break;
+		}
+		out += ch;
+		used += charBytes;
+	}
+	return out;
+}
+
+function sliceUtf8FromEnd(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) {
+		return "";
+	}
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) {
+		return value;
+	}
+
+	const chars = Array.from(value);
+	let used = 0;
+	let start = chars.length;
+	for (let i = chars.length - 1; i >= 0; i--) {
+		const charBytes = Buffer.byteLength(chars[i]!, "utf8");
+		if (used + charBytes > maxBytes) {
+			break;
+		}
+		used += charBytes;
+		start = i;
+	}
+	return chars.slice(start).join("");
+}
+
+function truncateToolResultTextForContext(text: string): string {
+	const totalBytes = Buffer.byteLength(text, "utf8");
+	if (totalBytes <= TOOL_RESULT_CONTEXT_MAX_BYTES) {
+		return text;
+	}
+
+	const removedBytes = totalBytes - TOOL_RESULT_CONTEXT_MAX_BYTES;
+	const marker = `…${removedBytes} bytes truncated…`;
+	const markerBytes = Buffer.byteLength(marker, "utf8");
+	if (markerBytes >= TOOL_RESULT_CONTEXT_MAX_BYTES) {
+		return sliceUtf8FromStart(marker, TOOL_RESULT_CONTEXT_MAX_BYTES);
+	}
+
+	const remainingBytes = TOOL_RESULT_CONTEXT_MAX_BYTES - markerBytes;
+	const startBudget = Math.floor(remainingBytes / 2);
+	const endBudget = remainingBytes - startBudget;
+	const left = sliceUtf8FromStart(text, startBudget);
+	const right = sliceUtf8FromEnd(text, endBudget);
+	return `${left}${marker}${right}`;
+}
+
+function applyToolResultContextTruncation(message: Message): Message {
+	if (message.role !== "toolResult") {
+		return message;
+	}
+
+	const content = message.content;
+	if (typeof content === "string") {
+		const truncated = truncateToolResultTextForContext(content);
+		return truncated === content ? message : { ...message, content: truncated };
+	}
+
+	if (!Array.isArray(content)) {
+		return message;
+	}
+
+	let changed = false;
+	const nextContent = content.map((item) => {
+		if (item.type !== "text") {
+			return item;
+		}
+		const truncated = truncateToolResultTextForContext(item.text);
+		if (truncated !== item.text) {
+			changed = true;
+			return { ...item, text: truncated };
+		}
+		return item;
+	});
+
+	return changed ? { ...message, content: nextContent } : message;
+}
+
+function isCodexModelForContextTruncation(model: Model<any> | undefined): boolean {
+	if (!model) {
+		return false;
+	}
+	return model.id.toLowerCase().includes("codex");
+}
+
 // Re-exports
 
 export type {
@@ -252,9 +356,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		const converted = convertToLlm(messages);
+		const truncateToolResults = isCodexModelForContextTruncation(agent.state.model ?? model);
+		const maybeTruncateToolResult = (message: Message): Message =>
+			truncateToolResults ? applyToolResultContextTruncation(message) : message;
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
-			return converted;
+			return converted.map(maybeTruncateToolResult);
 		}
 		// Filter out ImageContent from all messages, replacing with text placeholder
 		return converted.map((msg) => {
@@ -278,11 +385,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 										(arr[i - 1] as { type: "text"; text: string }).text === "Image reading is disabled."
 									),
 							);
-						return { ...msg, content: filteredContent };
+						return maybeTruncateToolResult({ ...msg, content: filteredContent });
 					}
 				}
 			}
-			return msg;
+			return maybeTruncateToolResult(msg);
 		});
 	};
 
