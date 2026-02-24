@@ -239,7 +239,7 @@ export class AgentSession {
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
-	private _pendingNextTurnMessages: CustomMessage[] = [];
+	private _pendingNextTurnMessages: AgentMessage[] = [];
 
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
@@ -1111,11 +1111,11 @@ export class AgentSession {
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
 	 *
 	 * @param content User message content (string or content array)
-	 * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
+	 * @param options.deliverAs Delivery mode when streaming: "steer", "followUp", or "nextTurn"
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp" },
+		options?: { deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
 		// Normalize content to text string + optional images
 		let text: string;
@@ -1135,6 +1135,19 @@ export class AgentSession {
 			}
 			text = textParts.join("\n");
 			if (images.length === 0) images = undefined;
+		}
+
+		if (options?.deliverAs === "nextTurn") {
+			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text }];
+			if (images) {
+				userContent.push(...images);
+			}
+			this._pendingNextTurnMessages.push({
+				role: "user",
+				content: userContent,
+				timestamp: Date.now(),
+			});
+			return;
 		}
 
 		// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
