@@ -9,6 +9,7 @@ import {
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
+	type NativeCompactionConfig,
 	streamSimple,
 	type TextContent,
 	type ThinkingBudgets,
@@ -86,6 +87,11 @@ export interface AgentOptions {
 	onPayload?: SimpleStreamOptions["onPayload"];
 
 	/**
+	 * Native compaction configuration for providers that support server-side context compaction.
+	 */
+	nativeCompaction?: NativeCompactionConfig;
+
+	/**
 	 * Custom token budgets for thinking levels (token-based providers only).
 	 */
 	thinkingBudgets?: ThinkingBudgets;
@@ -152,6 +158,7 @@ export class Agent {
 		context: AfterToolCallContext,
 		signal?: AbortSignal,
 	) => Promise<AfterToolCallResult | undefined>;
+	private _nativeCompaction?: NativeCompactionConfig;
 
 	constructor(opts: AgentOptions = {}) {
 		this._state = { ...this._state, ...opts.initialState };
@@ -163,6 +170,7 @@ export class Agent {
 		this._sessionId = opts.sessionId;
 		this.getApiKey = opts.getApiKey;
 		this._onPayload = opts.onPayload;
+		this._nativeCompaction = opts.nativeCompaction;
 		this._thinkingBudgets = opts.thinkingBudgets;
 		this._transport = opts.transport ?? "sse";
 		this._maxRetryDelayMs = opts.maxRetryDelayMs;
@@ -251,6 +259,15 @@ export class Agent {
 			| undefined,
 	) {
 		this._afterToolCall = value;
+	}
+
+	/** Native compaction config passed to providers that support it. */
+	get nativeCompaction(): NativeCompactionConfig | undefined {
+		return this._nativeCompaction;
+	}
+
+	set nativeCompaction(value: NativeCompactionConfig | undefined) {
+		this._nativeCompaction = value;
 	}
 
 	get state(): AgentState {
@@ -538,6 +555,7 @@ export class Agent {
 			toolExecution: this._toolExecution,
 			beforeToolCall: this._beforeToolCall,
 			afterToolCall: this._afterToolCall,
+			nativeCompaction: this._nativeCompaction,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,

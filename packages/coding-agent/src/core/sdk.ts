@@ -157,7 +157,10 @@ function applyToolResultContextTruncation(message: Message): Message {
 	const content = message.content;
 	if (typeof content === "string") {
 		const truncated = truncateToolResultTextForContext(content);
-		return truncated === content ? message : { ...message, content: truncated };
+		return {
+			...message,
+			content: [{ type: "text", text: truncated }],
+		};
 	}
 
 	if (!Array.isArray(content)) {

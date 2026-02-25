@@ -430,22 +430,22 @@ export class AgentSession {
 		// before the next assistant turn, not only after the full agent run ends.
 		if (event.type === "turn_end" && event.message.role === "assistant") {
 			const assistantMessage = event.message as AssistantMessage;
-			if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
-				const hasImmediateContinuation = assistantMessage.stopReason === "toolUse";
-				const allowThresholdCompaction = !(
-					this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex"
-				);
-				await this._checkCompaction(
-					assistantMessage,
+				if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
+					const hasImmediateContinuation = assistantMessage.stopReason === "toolUse";
+					const allowThresholdCompaction = !(
+						this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex"
+					);
+					await this._checkCompaction(
+						assistantMessage,
 					true,
 					"postTurn",
-					hasImmediateContinuation,
-					allowThresholdCompaction,
-				);
-				if (this._lastAssistantMessage && this._lastAssistantMessage.timestamp === assistantMessage.timestamp) {
-					this._lastAssistantMessage = undefined;
+						hasImmediateContinuation,
+						allowThresholdCompaction,
+					);
+					if (this._lastAssistantMessage && this._lastAssistantMessage.timestamp === assistantMessage.timestamp) {
+						this._lastAssistantMessage = undefined;
+					}
 				}
-			}
 		}
 
 		// Check auto-retry and auto-compaction after agent completes
@@ -1748,18 +1748,18 @@ export class AgentSession {
 				compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 			if (sameModel && !errorIsFromBeforeCompaction && isContextOverflow(assistantMessage, contextWindow)) {
 				this._pendingThresholdCompaction = false;
-				const messages = this.agent.state.messages;
-				if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-					this.agent.replaceMessages(messages.slice(0, -1));
+					const messages = this.agent.state.messages;
+					if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+						this.agent.replaceMessages(messages.slice(0, -1));
+					}
+					const outcome = await this._runAutoCompaction("overflow", true);
+					if (!outcome.ok && phase === "prePrompt") {
+						throw new Error(outcome.errorMessage ?? "Context overflow recovery failed");
+					}
+					return;
 				}
-				const outcome = await this._runAutoCompaction("overflow", true);
-				if (!outcome.ok && phase === "prePrompt") {
-					throw new Error(outcome.errorMessage ?? "Context overflow recovery failed");
-				}
+				this._handleNativeCompactionResponse(assistantMessage);
 				return;
-			}
-			this._handleNativeCompactionResponse(assistantMessage);
-			return;
 		}
 
 		const settings = this.settingsManager.getCompactionSettings();
@@ -1942,19 +1942,19 @@ export class AgentSession {
 			throw new Error("No model selected");
 		}
 
-		if (this._shouldUseCodexRemoteCompaction()) {
-			try {
-				return await this._runCodexRemoteCompaction(preparation, apiKey, signal, sourceMessages);
-			} catch (error) {
-				const errorMessage = error instanceof Error ? error.message : String(error);
-				if (this._isCompactionAbortLikeError(error, errorMessage, signal)) {
-					throw error;
-				}
-				throw new Error(`Codex remote compaction failed: ${errorMessage}`, { cause: error });
-			}
+		if (!this._shouldUseCodexRemoteCompaction()) {
+			return await compact(preparation, this.model, apiKey, customInstructions, signal);
 		}
 
-		return await compact(preparation, this.model, apiKey, customInstructions, signal);
+		try {
+			return await this._runCodexRemoteCompaction(preparation, apiKey, signal, sourceMessages);
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			if (this._isCompactionAbortLikeError(error, errorMessage, signal)) {
+				throw error;
+			}
+			return await compact(preparation, this.model, apiKey, customInstructions, signal);
+		}
 	}
 
 	private _isCompactionAbortLikeError(error: unknown, errorMessage: string, signal?: AbortSignal): boolean {
@@ -2311,14 +2311,14 @@ export class AgentSession {
 				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
 				tokensBefore = extensionCompaction.tokensBefore;
 				details = extensionCompaction.details;
-			} else {
-				const compactResult = await this._runCompactionWithCodexFallback(
-					preparation,
-					apiKey,
-					undefined,
-					signal,
-					sourceMessages,
-				);
+				} else {
+					const compactResult = await this._runCompactionWithCodexFallback(
+						preparation,
+						apiKey,
+						undefined,
+						signal,
+						sourceMessages,
+					);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;

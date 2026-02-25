@@ -110,6 +110,8 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/** Custom summarization instructions for native compaction. Replaces the default prompt entirely. */
+	compactionInstructions?: string;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -249,6 +251,8 @@ export function estimateTokens(message: AgentMessage): number {
 					chars += block.thinking.length;
 				} else if (block.type === "toolCall") {
 					chars += block.name.length + JSON.stringify(block.arguments).length;
+				} else if (block.type === "compaction") {
+					chars += block.content.length;
 				}
 			}
 			return Math.ceil(chars / 4);

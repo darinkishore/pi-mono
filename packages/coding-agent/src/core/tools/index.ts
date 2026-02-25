@@ -67,13 +67,6 @@ export {
 	truncateTail,
 } from "./truncate.js";
 export {
-	createWriteTool,
-	type WriteOperations,
-	type WriteToolInput,
-	type WriteToolOptions,
-	writeTool,
-} from "./write.js";
-export {
 	createExecCommandTool,
 	createWriteStdinTool,
 	type ExecCommandToolInput,
@@ -83,6 +76,13 @@ export {
 	type WriteStdinToolInput,
 	writeStdinTool,
 } from "./unified-exec.js";
+export {
+	createWriteTool,
+	type WriteOperations,
+	type WriteToolInput,
+	type WriteToolOptions,
+	writeTool,
+} from "./write.js";
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { applyPatchTool, createApplyPatchTool } from "./apply-patch.js";

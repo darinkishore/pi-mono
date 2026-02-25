@@ -108,7 +108,9 @@ function isRetryableError(status: number, errorText: string): boolean {
 	if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
 		return true;
 	}
-	return /rate.?limit|overloaded|service.?unavailable|upstream.?connect|connection.?refused/i.test(errorText);
+	return /rate.?limit|too many requests|please wait before trying again|overloaded|service.?unavailable|upstream.?connect|connection.?refused/i.test(
+		errorText,
+	);
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

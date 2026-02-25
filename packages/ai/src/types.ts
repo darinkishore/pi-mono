@@ -103,6 +103,22 @@ export interface StreamOptions {
 	 * For example, Anthropic uses `user_id` for abuse tracking and rate limiting.
 	 */
 	metadata?: Record<string, unknown>;
+	/**
+	 * Native compaction configuration for providers that support server-side context compaction.
+	 * Currently supported by Anthropic (claude-opus-4-6, claude-sonnet-4-6).
+	 * Other providers silently ignore this field.
+	 */
+	nativeCompaction?: NativeCompactionConfig;
+}
+
+export interface NativeCompactionConfig {
+	enabled: boolean;
+	/** Token threshold to trigger compaction. Defaults to 95% of contextWindow. */
+	triggerTokens?: number;
+	/** Custom summarization instructions. Replaces the default prompt entirely. */
+	instructions?: string;
+	/** Whether to pause after compaction for client-side processing. Default: false. */
+	pauseAfterCompaction?: boolean;
 }
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
@@ -166,6 +182,11 @@ export interface ToolCall {
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 }
 
+export interface CompactionContent {
+	type: "compaction";
+	content: string;
+}
+
 export interface Usage {
 	input: number;
 	output: number;
@@ -181,7 +202,7 @@ export interface Usage {
 	};
 }
 
-export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+export type StopReason = "stop" | "length" | "toolUse" | "compaction" | "error" | "aborted";
 
 export interface UserMessage {
 	role: "user";
@@ -191,7 +212,7 @@ export interface UserMessage {
 
 export interface AssistantMessage {
 	role: "assistant";
-	content: (TextContent | ThinkingContent | ToolCall)[];
+	content: (TextContent | ThinkingContent | ToolCall | CompactionContent)[];
 	api: Api;
 	provider: Provider;
 	model: string;
@@ -263,7 +284,14 @@ export type AssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
-	| { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse">; message: AssistantMessage }
+	| { type: "compaction_start"; contentIndex: number; partial: AssistantMessage }
+	| { type: "compaction_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
+	| { type: "compaction_end"; contentIndex: number; content: string; partial: AssistantMessage }
+	| {
+			type: "done";
+			reason: Extract<StopReason, "stop" | "length" | "toolUse" | "compaction">;
+			message: AssistantMessage;
+	  }
 	| { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
 
 /**
