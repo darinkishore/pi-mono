@@ -10,6 +10,7 @@ import type {
 	Api,
 	AssistantMessage,
 	CacheRetention,
+	CompactionContent,
 	Context,
 	ImageContent,
 	Message,
@@ -236,13 +237,16 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				options?.interleavedThinking ?? true,
 				options?.headers,
 				copilotDynamicHeaders,
+				options?.nativeCompaction?.enabled,
 			);
 			const params = buildParams(model, context, isOAuthToken, options);
 			options?.onPayload?.(params);
 			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
 
-			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
+			type Block = (ThinkingContent | TextContent | CompactionContent | (ToolCall & { partialJson: string })) & {
+				index: number;
+			};
 			const blocks = output.content as Block[];
 
 			for await (const event of anthropicStream) {
@@ -288,6 +292,14 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						};
 						output.content.push(block);
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+					} else if ((event.content_block as any).type === "compaction") {
+						const block: Block = {
+							type: "compaction",
+							content: (event.content_block as any).content ?? "",
+							index: event.index,
+						};
+						output.content.push(block);
+						stream.push({ type: "compaction_start", contentIndex: output.content.length - 1, partial: output });
 					}
 				} else if (event.type === "content_block_delta") {
 					if (event.delta.type === "text_delta") {
@@ -334,6 +346,19 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							block.thinkingSignature = block.thinkingSignature || "";
 							block.thinkingSignature += event.delta.signature;
 						}
+					} else if ((event.delta as any).type === "compaction_delta") {
+						const index = blocks.findIndex((b) => b.index === event.index);
+						const block = blocks[index];
+						if (block && block.type === "compaction") {
+							// Compaction arrives as a single delta with complete content
+							block.content = (event.delta as any).content ?? "";
+							stream.push({
+								type: "compaction_delta",
+								contentIndex: index,
+								delta: block.content,
+								partial: output,
+							});
+						}
 					}
 				} else if (event.type === "content_block_stop") {
 					const index = blocks.findIndex((b) => b.index === event.index);
@@ -361,6 +386,13 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 								type: "toolcall_end",
 								contentIndex: index,
 								toolCall: block,
+								partial: output,
+							});
+						} else if (block.type === "compaction") {
+							stream.push({
+								type: "compaction_end",
+								contentIndex: index,
+								content: block.content,
 								partial: output,
 							});
 						}
@@ -491,12 +523,16 @@ function createClient(
 	interleavedThinking: boolean,
 	optionsHeaders?: Record<string, string>,
 	dynamicHeaders?: Record<string, string>,
+	nativeCompaction?: boolean,
 ): { client: Anthropic; isOAuthToken: boolean } {
 	// Copilot: Bearer auth, selective betas (no fine-grained-tool-streaming)
 	if (model.provider === "github-copilot") {
 		const betaFeatures: string[] = [];
 		if (interleavedThinking) {
 			betaFeatures.push("interleaved-thinking-2025-05-14");
+		}
+		if (nativeCompaction) {
+			betaFeatures.push("compact-2026-01-12");
 		}
 
 		const client = new Anthropic({
@@ -522,6 +558,9 @@ function createClient(
 	const betaFeatures = ["fine-grained-tool-streaming-2025-05-14"];
 	if (interleavedThinking) {
 		betaFeatures.push("interleaved-thinking-2025-05-14");
+	}
+	if (nativeCompaction) {
+		betaFeatures.push("compact-2026-01-12");
 	}
 
 	// OAuth: Bearer auth, Claude Code identity headers
@@ -647,6 +686,20 @@ function buildParams(
 		}
 	}
 
+	// Native compaction: pass context_management so the API handles summarization server-side
+	if (options?.nativeCompaction?.enabled) {
+		const triggerValue = options.nativeCompaction.triggerTokens ?? Math.floor(model.contextWindow * 0.95);
+		const edit: Record<string, unknown> = {
+			type: "compact_20260112",
+			trigger: { type: "input_tokens", value: triggerValue },
+			pause_after_compaction: options.nativeCompaction.pauseAfterCompaction ?? false,
+		};
+		if (options.nativeCompaction.instructions) {
+			edit.instructions = options.nativeCompaction.instructions;
+		}
+		(params as any).context_management = { edits: [edit] };
+	}
+
 	return params;
 }
 
@@ -742,6 +795,9 @@ function convertMessages(
 						name: isOAuthToken ? toClaudeCodeName(block.name) : block.name,
 						input: block.arguments ?? {},
 					});
+				} else if (block.type === "compaction") {
+					// Round-trip compaction blocks so the API drops pre-compaction messages
+					blocks.push({ type: "compaction", content: block.content } as any);
 				}
 			}
 			if (blocks.length === 0) continue;
@@ -846,6 +902,8 @@ function mapStopReason(reason: Anthropic.Messages.StopReason | string): StopReas
 			return "stop"; // We don't supply stop sequences, so this should never happen
 		case "sensitive": // Content flagged by safety filters (not yet in SDK types)
 			return "error";
+		case "compaction": // Native compaction paused (pause_after_compaction: true)
+			return "compaction";
 		default:
 			// Handle unknown stop reasons gracefully (API may add new values)
 			throw new Error(`Unhandled stop reason: ${reason}`);

@@ -23,7 +23,14 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
+import type {
+	AssistantMessage,
+	CompactionContent,
+	ImageContent,
+	Message,
+	Model,
+	TextContent,
+} from "@mariozechner/pi-ai";
 import {
 	compactOpenAICodexResponses,
 	isContextOverflow,
@@ -424,7 +431,8 @@ export class AgentSession {
 		if (event.type === "turn_end" && event.message.role === "assistant") {
 			const assistantMessage = event.message as AssistantMessage;
 			if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
-				await this._checkCompaction(assistantMessage, true, "postTurn");
+				const hasImmediateContinuation = assistantMessage.stopReason === "toolUse";
+				await this._checkCompaction(assistantMessage, true, "postTurn", hasImmediateContinuation);
 				if (this._lastAssistantMessage && this._lastAssistantMessage.timestamp === assistantMessage.timestamp) {
 					this._lastAssistantMessage = undefined;
 				}
@@ -1237,6 +1245,7 @@ export class AgentSession {
 		this._pendingNextTurnMessages = [];
 
 		this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
+		this._syncNativeCompaction();
 
 		// Run setup callback if provided (e.g., to append initial messages)
 		if (options?.setup) {
@@ -1309,6 +1318,7 @@ export class AgentSession {
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(this.thinkingLevel);
 		this._applyModelToolsetDefaults();
+		this._syncNativeCompaction();
 
 		await this._emitModelSelect(model, previousModel, "set");
 	}
@@ -1368,6 +1378,7 @@ export class AgentSession {
 		// Apply thinking level (setThinkingLevel clamps to model capabilities)
 		this.setThinkingLevel(next.thinkingLevel);
 		this._applyModelToolsetDefaults();
+		this._syncNativeCompaction();
 
 		await this._emitModelSelect(next.model, currentModel, "cycle");
 
@@ -1578,15 +1589,12 @@ export class AgentSession {
 				tokensBefore = extensionCompaction.tokensBefore;
 				details = extensionCompaction.details;
 			} else {
-				const result = this._shouldUseCodexRemoteCompaction()
-					? await this._runCodexRemoteCompaction(preparation, apiKey, this._compactionAbortController.signal)
-					: await compact(
-							preparation,
-							this.model,
-							apiKey,
-							customInstructions,
-							this._compactionAbortController.signal,
-						);
+				const result = await this._runCompactionWithCodexFallback(
+					preparation,
+					apiKey,
+					customInstructions,
+					this._compactionAbortController.signal,
+				);
 				summary = result.summary;
 				firstKeptEntryId = result.firstKeptEntryId;
 				tokensBefore = result.tokensBefore;
@@ -1658,7 +1666,31 @@ export class AgentSession {
 		assistantMessage: AssistantMessage,
 		skipAbortedCheck = true,
 		phase: "postTurn" | "prePrompt" = "postTurn",
+		hasImmediateContinuation = false,
 	): Promise<void> {
+		// Native compaction is handled server-side via context_management.
+		// Keep local overflow fallback because native trigger thresholds can be higher than
+		// the provider's effective input budget once max output tokens are reserved.
+		if (this._shouldUseNativeCompaction()) {
+			const contextWindow = this.model?.contextWindow ?? 0;
+			const sameModel =
+				this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
+			const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
+			const errorIsFromBeforeCompaction =
+				compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
+			if (sameModel && !errorIsFromBeforeCompaction && isContextOverflow(assistantMessage, contextWindow)) {
+				this._pendingThresholdCompaction = false;
+				const messages = this.agent.state.messages;
+				if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+					this.agent.replaceMessages(messages.slice(0, -1));
+				}
+				await this._runAutoCompaction("overflow", true);
+				return;
+			}
+			this._handleNativeCompactionResponse(assistantMessage);
+			return;
+		}
+
 		const settings = this.settingsManager.getCompactionSettings();
 		const codexManagedCompaction =
 			this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex";
@@ -1715,7 +1747,7 @@ export class AgentSession {
 			return;
 		}
 
-		if (phase === "postTurn" && !this.agent.hasQueuedMessages()) {
+		if (phase === "postTurn" && !hasImmediateContinuation && !this.agent.hasQueuedMessages()) {
 			// Match Codex semantics: threshold compaction runs at the start of the next prompt.
 			this._pendingThresholdCompaction = true;
 			return;
@@ -1725,6 +1757,63 @@ export class AgentSession {
 			this._pendingThresholdCompaction = false;
 			await this._runAutoCompaction("threshold", false);
 		}
+	}
+
+	private _shouldUseNativeCompaction(): boolean {
+		if (!this.model) return false;
+		// Only for direct Anthropic API (not Bedrock which uses Converse API)
+		if (this.model.provider !== "anthropic") return false;
+		if (this.model.api !== "anthropic-messages") return false;
+		// Native compaction beta only supports Opus 4.6 and Sonnet 4.6
+		if (!this.model.id.includes("opus-4-6") && !this.model.id.includes("sonnet-4-6")) return false;
+		return this.settingsManager.getCompactionSettings().enabled;
+	}
+
+	/** Sync native compaction config to the Agent based on current model/settings. */
+	private _syncNativeCompaction(): void {
+		if (!this._shouldUseNativeCompaction() || !this.model) {
+			this.agent.nativeCompaction = undefined;
+			return;
+		}
+		const settings = this.settingsManager.getCompactionSettings();
+		const contextWindow = this.model.contextWindow ?? 0;
+		this.agent.nativeCompaction = {
+			enabled: true,
+			triggerTokens: Math.max(50000, Math.floor(contextWindow * 0.95)),
+			instructions: settings.compactionInstructions,
+		};
+	}
+
+	/**
+	 * Check if a native compaction block was returned in the assistant response.
+	 * If so, record it in the session manager for bookkeeping and fire extension hooks.
+	 */
+	private _handleNativeCompactionResponse(assistantMessage: AssistantMessage): void {
+		const compactionBlock = assistantMessage.content.find((b): b is CompactionContent => b.type === "compaction");
+		if (!compactionBlock) return;
+
+		this._emit({ type: "auto_compaction_start", reason: "threshold" });
+
+		// Store the full assistant message (compaction block + text response) as replacementMessages.
+		// The compaction block tells the API to drop everything before it; the text is the actual response.
+		// buildSessionContext() will emit these as the new message history.
+		const entries = this.sessionManager.getEntries();
+		const firstKeptId = entries.length > 0 ? entries[entries.length - 1].id : "";
+
+		this.sessionManager.appendCompaction(
+			compactionBlock.content,
+			firstKeptId,
+			assistantMessage.usage.input,
+			{ readFiles: [], modifiedFiles: [], replacementMessages: [assistantMessage] },
+			false,
+		);
+
+		const result: CompactionResult = {
+			summary: compactionBlock.content,
+			firstKeptEntryId: firstKeptId,
+			tokensBefore: assistantMessage.usage.input,
+		};
+		this._emit({ type: "auto_compaction_end", result, aborted: false, willRetry: false });
 	}
 
 	private _shouldUseCodexRemoteCompaction(): boolean {
@@ -1751,6 +1840,35 @@ export class AgentSession {
 		}
 
 		return "Context compacted by Codex remote compaction.";
+	}
+
+	private _isCompactionAbortError(error: unknown): boolean {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		return /abort(ed|error)?|request was aborted/i.test(errorMessage);
+	}
+
+	private async _runCompactionWithCodexFallback(
+		preparation: CompactionPreparation,
+		apiKey: string,
+		customInstructions: string | undefined,
+		signal?: AbortSignal,
+	): Promise<CompactionResult> {
+		if (!this.model) {
+			throw new Error("No model selected");
+		}
+
+		if (!this._shouldUseCodexRemoteCompaction()) {
+			return await compact(preparation, this.model, apiKey, customInstructions, signal);
+		}
+
+		try {
+			return await this._runCodexRemoteCompaction(preparation, apiKey, signal);
+		} catch (error) {
+			if (signal?.aborted || this._isCompactionAbortError(error)) {
+				throw error;
+			}
+			return await compact(preparation, this.model, apiKey, customInstructions, signal);
+		}
 	}
 
 	private async _runCodexRemoteCompaction(
@@ -1921,9 +2039,12 @@ export class AgentSession {
 				tokensBefore = extensionCompaction.tokensBefore;
 				details = extensionCompaction.details;
 			} else {
-				const compactResult = this._shouldUseCodexRemoteCompaction()
-					? await this._runCodexRemoteCompaction(preparation, apiKey, this._autoCompactionAbortController.signal)
-					: await compact(preparation, this.model, apiKey, undefined, this._autoCompactionAbortController.signal);
+				const compactResult = await this._runCompactionWithCodexFallback(
+					preparation,
+					apiKey,
+					undefined,
+					this._autoCompactionAbortController.signal,
+				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
@@ -2000,6 +2121,7 @@ export class AgentSession {
 	 */
 	setAutoCompactionEnabled(enabled: boolean): void {
 		this.settingsManager.setCompactionEnabled(enabled);
+		this._syncNativeCompaction();
 	}
 
 	/** Whether auto-compaction is enabled */
@@ -2650,6 +2772,7 @@ export class AgentSession {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel);
 		}
 
+		this._syncNativeCompaction();
 		this._reconnectToAgent();
 		return true;
 	}

@@ -8,6 +8,7 @@ import {
 	type ImageContent,
 	type Message,
 	type Model,
+	type NativeCompactionConfig,
 	streamSimple,
 	type TextContent,
 	type ThinkingBudgets,
@@ -122,6 +123,7 @@ export class Agent {
 	private _thinkingBudgets?: ThinkingBudgets;
 	private _transport: Transport;
 	private _maxRetryDelayMs?: number;
+	private _nativeCompaction?: NativeCompactionConfig;
 
 	constructor(opts: AgentOptions = {}) {
 		this._state = { ...this._state, ...opts.initialState };
@@ -193,6 +195,15 @@ export class Agent {
 	 */
 	set maxRetryDelayMs(value: number | undefined) {
 		this._maxRetryDelayMs = value;
+	}
+
+	/** Native compaction config passed to providers that support it. */
+	get nativeCompaction(): NativeCompactionConfig | undefined {
+		return this._nativeCompaction;
+	}
+
+	set nativeCompaction(value: NativeCompactionConfig | undefined) {
+		this._nativeCompaction = value;
 	}
 
 	get state(): AgentState {
@@ -432,6 +443,7 @@ export class Agent {
 			transport: this._transport,
 			thinkingBudgets: this._thinkingBudgets,
 			maxRetryDelayMs: this._maxRetryDelayMs,
+			nativeCompaction: this._nativeCompaction,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,

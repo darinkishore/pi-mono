@@ -753,6 +753,62 @@ describe("openai-codex streaming", () => {
 		}
 	});
 
+	it("retries codex compact endpoint when API returns 'Too many requests, please wait before trying again'", async () => {
+		const payload = Buffer.from(
+			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
+			"utf8",
+		).toString("base64");
+		const token = `aaa.${payload}.bbb`;
+		let compactAttempts = 0;
+
+		const fetchMock = vi.fn(async (input: string | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url === "https://chatgpt.com/backend-api/codex/responses/compact") {
+				compactAttempts++;
+				if (compactAttempts === 1) {
+					return new Response("Too many requests, please wait before trying again.", { status: 400 });
+				}
+				return new Response(
+					JSON.stringify({
+						output: [
+							{
+								type: "message",
+								role: "user",
+								content: [{ type: "input_text", text: "Another language model started to solve this problem" }],
+							},
+						],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response("not found", { status: 404 });
+		});
+
+		global.fetch = fetchMock as typeof fetch;
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.3-codex",
+			name: "GPT-5.3 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 272000,
+			maxTokens: 128000,
+		};
+
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Compact this context", timestamp: Date.now() }],
+		};
+
+		const result = await compactOpenAICodexResponses(model, context, { apiKey: token });
+		expect(compactAttempts).toBe(2);
+		expect(result[0]?.role).toBe("user");
+	});
+
 	it("serializes function tools with strict=false in codex request body", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 		process.env.PI_CODING_AGENT_DIR = tempDir;

@@ -138,6 +138,46 @@ describe("AgentSession compaction semantics", () => {
 		session.dispose();
 	});
 
+	it("runs threshold compaction at post-turn when tool-use implies immediate continuation", async () => {
+		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const model = getModel("openai-codex", "gpt-5.3-codex")!;
+		const session = createSession(model, tempDir, "codex-key");
+		const runAutoCompaction = vi
+			.spyOn(
+				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue();
+
+		const assistant = makeAssistant(model, 250_000);
+
+		await (
+			session as unknown as {
+				_checkCompaction: (
+					message: AssistantMessage,
+					skipAbortedCheck: boolean,
+					phase: "postTurn" | "prePrompt",
+					hasImmediateContinuation?: boolean,
+				) => Promise<void>;
+				_pendingThresholdCompaction: boolean;
+			}
+		)._checkCompaction(assistant, true, "postTurn", true);
+
+		expect(runAutoCompaction).toHaveBeenCalledTimes(1);
+		expect(runAutoCompaction).toHaveBeenCalledWith("threshold", false);
+		expect(
+			(
+				session as unknown as {
+					_pendingThresholdCompaction: boolean;
+				}
+			)._pendingThresholdCompaction,
+		).toBe(false);
+
+		session.dispose();
+	});
+
 	it("applies Codex 90% auto-compaction limit for gpt-5.3", async () => {
 		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
@@ -234,6 +274,38 @@ describe("AgentSession compaction semantics", () => {
 		session.dispose();
 	});
 
+	it("falls back to overflow compaction when native Anthropic compaction hits context overflow", async () => {
+		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const opusModel = getModel("anthropic", "claude-opus-4-6")!;
+		const session = createSession(opusModel, tempDir, "anthropic-key", true);
+		const runAutoCompaction = vi
+			.spyOn(
+				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue();
+
+		const assistant = makeAssistant(opusModel, 0);
+		assistant.stopReason = "error";
+		assistant.errorMessage = "prompt is too long: 213462 tokens > 200000 maximum";
+
+		await (
+			session as unknown as {
+				_checkCompaction: (
+					message: AssistantMessage,
+					skipAbortedCheck: boolean,
+					phase: "postTurn" | "prePrompt",
+				) => Promise<void>;
+			}
+		)._checkCompaction(assistant, true, "postTurn");
+
+		expect(runAutoCompaction).toHaveBeenCalledTimes(1);
+		expect(runAutoCompaction).toHaveBeenCalledWith("overflow", true);
+		session.dispose();
+	});
+
 	it("still runs threshold compaction for Codex when global auto-compaction is disabled", async () => {
 		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
@@ -304,6 +376,7 @@ describe("AgentSession compaction semantics", () => {
 						message: AssistantMessage,
 						skipAbortedCheck: boolean,
 						phase: "postTurn" | "prePrompt",
+						hasImmediateContinuation?: boolean,
 					) => Promise<void>;
 				},
 				"_checkCompaction",
@@ -332,7 +405,7 @@ describe("AgentSession compaction semantics", () => {
 		});
 
 		expect(checkCompaction).toHaveBeenCalledTimes(1);
-		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn");
+		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn", false);
 		session.dispose();
 	});
 });
