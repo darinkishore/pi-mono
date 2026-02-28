@@ -69,6 +69,8 @@ function createSession(
 	});
 }
 
+const AUTO_COMPACTION_OK = { ok: true } as const;
+
 describe("AgentSession compaction semantics", () => {
 	let tempDir: string | undefined;
 
@@ -88,10 +90,15 @@ describe("AgentSession compaction semantics", () => {
 		const session = createSession(model, tempDir, "anthropic-key");
 		const runAutoCompaction = vi
 			.spyOn(
-				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue(AUTO_COMPACTION_OK);
 
 		const assistant = makeAssistant(model, 186_000);
 
@@ -146,10 +153,15 @@ describe("AgentSession compaction semantics", () => {
 		const session = createSession(model, tempDir, "codex-key");
 		const runAutoCompaction = vi
 			.spyOn(
-				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue(AUTO_COMPACTION_OK);
 
 		const assistant = makeAssistant(model, 250_000);
 
@@ -186,10 +198,15 @@ describe("AgentSession compaction semantics", () => {
 		const session = createSession(codexModel, tempDir, "codex-key");
 		const runAutoCompaction = vi
 			.spyOn(
-				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue(AUTO_COMPACTION_OK);
 
 		const assistant = makeAssistant(codexModel, 250_000);
 		await (
@@ -250,10 +267,15 @@ describe("AgentSession compaction semantics", () => {
 		const session = createSession(codexModel, tempDir, "codex-key", false);
 		const runAutoCompaction = vi
 			.spyOn(
-				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue(AUTO_COMPACTION_OK);
 
 		const assistant = makeAssistant(codexModel, 0);
 		assistant.stopReason = "error";
@@ -282,10 +304,15 @@ describe("AgentSession compaction semantics", () => {
 		const session = createSession(opusModel, tempDir, "anthropic-key", true);
 		const runAutoCompaction = vi
 			.spyOn(
-				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue(AUTO_COMPACTION_OK);
 
 		const assistant = makeAssistant(opusModel, 0);
 		assistant.stopReason = "error";
@@ -314,10 +341,15 @@ describe("AgentSession compaction semantics", () => {
 		const session = createSession(codexModel, tempDir, "codex-key", false);
 		const runAutoCompaction = vi
 			.spyOn(
-				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue(AUTO_COMPACTION_OK);
 
 		const assistant = makeAssistant(codexModel, 250_000);
 		await (
@@ -343,10 +375,15 @@ describe("AgentSession compaction semantics", () => {
 		const session = createSession(anthropicModel, tempDir, "anthropic-key", false);
 		const runAutoCompaction = vi
 			.spyOn(
-				session as unknown as { _runAutoCompaction: (r: "overflow" | "threshold", w: boolean) => Promise<void> },
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
 				"_runAutoCompaction",
 			)
-			.mockResolvedValue();
+			.mockResolvedValue(AUTO_COMPACTION_OK);
 
 		const assistant = makeAssistant(anthropicModel, 300_000);
 		await (

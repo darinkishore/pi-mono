@@ -1684,7 +1684,10 @@ export class AgentSession {
 				if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 					this.agent.replaceMessages(messages.slice(0, -1));
 				}
-				await this._runAutoCompaction("overflow", true);
+				const outcome = await this._runAutoCompaction("overflow", true);
+				if (!outcome.ok && phase === "prePrompt") {
+					throw new Error(outcome.errorMessage ?? "Context overflow recovery failed");
+				}
 				return;
 			}
 			this._handleNativeCompactionResponse(assistantMessage);
@@ -1728,7 +1731,10 @@ export class AgentSession {
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.replaceMessages(messages.slice(0, -1));
 			}
-			await this._runAutoCompaction("overflow", true);
+			const outcome = await this._runAutoCompaction("overflow", true);
+			if (!outcome.ok && phase === "prePrompt") {
+				throw new Error(outcome.errorMessage ?? "Context overflow recovery failed");
+			}
 			return;
 		}
 
@@ -1755,7 +1761,16 @@ export class AgentSession {
 
 		if (shouldCompactNow || this._pendingThresholdCompaction) {
 			this._pendingThresholdCompaction = false;
-			await this._runAutoCompaction("threshold", false);
+			const outcome = await this._runAutoCompaction("threshold", false);
+			if (!outcome.ok) {
+				if (phase === "prePrompt") {
+					throw new Error(outcome.errorMessage ?? "Auto-compaction failed");
+				}
+				// Match Codex behavior: if in-loop threshold compaction fails, stop the active turn.
+				if (hasImmediateContinuation) {
+					this.agent.abort();
+				}
+			}
 		}
 	}
 
@@ -1842,11 +1857,6 @@ export class AgentSession {
 		return "Context compacted by Codex remote compaction.";
 	}
 
-	private _isCompactionAbortError(error: unknown): boolean {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		return /abort(ed|error)?|request was aborted/i.test(errorMessage);
-	}
-
 	private async _runCompactionWithCodexFallback(
 		preparation: CompactionPreparation,
 		apiKey: string,
@@ -1857,18 +1867,33 @@ export class AgentSession {
 			throw new Error("No model selected");
 		}
 
-		if (!this._shouldUseCodexRemoteCompaction()) {
-			return await compact(preparation, this.model, apiKey, customInstructions, signal);
+		if (this._shouldUseCodexRemoteCompaction()) {
+			try {
+				return await this._runCodexRemoteCompaction(preparation, apiKey, signal);
+			} catch (error) {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				if (this._isCompactionAbortLikeError(error, errorMessage, signal)) {
+					throw error;
+				}
+				throw new Error(`Codex remote compaction failed: ${errorMessage}`, { cause: error });
+			}
 		}
 
-		try {
-			return await this._runCodexRemoteCompaction(preparation, apiKey, signal);
-		} catch (error) {
-			if (signal?.aborted || this._isCompactionAbortError(error)) {
-				throw error;
-			}
-			return await compact(preparation, this.model, apiKey, customInstructions, signal);
-		}
+		return await compact(preparation, this.model, apiKey, customInstructions, signal);
+	}
+
+	private _isCompactionAbortLikeError(error: unknown, errorMessage: string, signal?: AbortSignal): boolean {
+		if (signal?.aborted) return true;
+		if (error instanceof Error && error.name === "AbortError") return true;
+		const normalizedErrorMessage = errorMessage.toLowerCase().replace(/\s+/g, " ").trim();
+		return (
+			normalizedErrorMessage === "compaction cancelled" ||
+			normalizedErrorMessage === "aborterror" ||
+			normalizedErrorMessage === "request was aborted" ||
+			normalizedErrorMessage.startsWith("request was aborted ") ||
+			normalizedErrorMessage === "the operation was aborted" ||
+			normalizedErrorMessage === "this operation was aborted"
+		);
 	}
 
 	private async _runCodexRemoteCompaction(
@@ -1978,7 +2003,16 @@ export class AgentSession {
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+	): Promise<{ ok: boolean; errorMessage?: string }> {
+		// Guard against overlapping auto-compactions sharing a single controller field.
+		// If one is already in flight, skip starting another.
+		if (this._autoCompactionAbortController) {
+			return { ok: true };
+		}
+
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "auto_compaction_start", reason });
@@ -1987,13 +2021,13 @@ export class AgentSession {
 		try {
 			if (!this.model) {
 				this._emit({ type: "auto_compaction_end", result: undefined, aborted: false, willRetry: false });
-				return;
+				return { ok: true };
 			}
 
 			const apiKey = await this._modelRegistry.getApiKey(this.model);
 			if (!apiKey) {
 				this._emit({ type: "auto_compaction_end", result: undefined, aborted: false, willRetry: false });
-				return;
+				return { ok: true };
 			}
 
 			const pathEntries = this.sessionManager.getBranch();
@@ -2001,7 +2035,7 @@ export class AgentSession {
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
 				this._emit({ type: "auto_compaction_end", result: undefined, aborted: false, willRetry: false });
-				return;
+				return { ok: true };
 			}
 
 			let extensionCompaction: CompactionResult | undefined;
@@ -2018,7 +2052,7 @@ export class AgentSession {
 
 				if (extensionResult?.cancel) {
 					this._emit({ type: "auto_compaction_end", result: undefined, aborted: true, willRetry: false });
-					return;
+					return { ok: true };
 				}
 
 				if (extensionResult?.compaction) {
@@ -2053,13 +2087,16 @@ export class AgentSession {
 
 			if (this._autoCompactionAbortController.signal.aborted) {
 				this._emit({ type: "auto_compaction_end", result: undefined, aborted: true, willRetry: false });
-				return;
+				return { ok: true };
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension);
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.replaceMessages(sessionContext.messages);
+			const postCompactionTokens = estimateContextTokens(sessionContext.messages).tokens;
+			const autoCompactionThreshold = this._getAutoCompactLimit(this.model?.contextWindow ?? 0, settings);
+			const autoCompactionDiagnostic = `post-compaction context: ${postCompactionTokens} tokens, threshold: ${autoCompactionThreshold} tokens`;
 
 			// Get the saved compaction entry for the extension event
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
@@ -2078,7 +2115,10 @@ export class AgentSession {
 				summary,
 				firstKeptEntryId,
 				tokensBefore,
-				details,
+				details:
+					details && typeof details === "object" && !Array.isArray(details)
+						? { ...(details as Record<string, unknown>), autoCompactionDiagnostic }
+						: { originalDetails: details, autoCompactionDiagnostic },
 			};
 			this._emit({ type: "auto_compaction_end", result, aborted: false, willRetry });
 
@@ -2099,18 +2139,25 @@ export class AgentSession {
 					this.agent.continue().catch(() => {});
 				}, 100);
 			}
+			return { ok: true };
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+			if (this._isCompactionAbortLikeError(error, errorMessage, this._autoCompactionAbortController?.signal)) {
+				this._emit({ type: "auto_compaction_end", result: undefined, aborted: true, willRetry: false });
+				return { ok: true };
+			}
+			const prefixedErrorMessage =
+				reason === "overflow"
+					? `Context overflow recovery failed: ${errorMessage}`
+					: `Auto-compaction failed: ${errorMessage}`;
 			this._emit({
 				type: "auto_compaction_end",
 				result: undefined,
 				aborted: false,
 				willRetry: false,
-				errorMessage:
-					reason === "overflow"
-						? `Context overflow recovery failed: ${errorMessage}`
-						: `Auto-compaction failed: ${errorMessage}`,
+				errorMessage: prefixedErrorMessage,
 			});
+			return { ok: false, errorMessage: prefixedErrorMessage };
 		} finally {
 			this._autoCompactionAbortController = undefined;
 		}
