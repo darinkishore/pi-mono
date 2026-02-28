@@ -1748,18 +1748,18 @@ export class AgentSession {
 				compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 			if (sameModel && !errorIsFromBeforeCompaction && isContextOverflow(assistantMessage, contextWindow)) {
 				this._pendingThresholdCompaction = false;
-					const messages = this.agent.state.messages;
-					if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-						this.agent.replaceMessages(messages.slice(0, -1));
-					}
-					const outcome = await this._runAutoCompaction("overflow", true);
-					if (!outcome.ok && phase === "prePrompt") {
-						throw new Error(outcome.errorMessage ?? "Context overflow recovery failed");
-					}
-					return;
+				const messages = this.agent.state.messages;
+				if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+					this.agent.replaceMessages(messages.slice(0, -1));
 				}
-				this._handleNativeCompactionResponse(assistantMessage);
+				const outcome = await this._runAutoCompaction("overflow", true);
+				if (!outcome.ok && phase === "prePrompt") {
+					throw new Error(outcome.errorMessage ?? "Context overflow recovery failed");
+				}
 				return;
+			}
+			this._handleNativeCompactionResponse(assistantMessage);
+			return;
 		}
 
 		const settings = this.settingsManager.getCompactionSettings();
@@ -1832,10 +1832,7 @@ export class AgentSession {
 
 		if (shouldCompactNow || this._pendingThresholdCompaction) {
 			this._pendingThresholdCompaction = false;
-			// For immediate tool-use continuation, resume from compacted context after success.
-			// This matches codex-rs inline continuation semantics after pre-sampling compaction.
-			const shouldResumeAfterThresholdCompaction = hasImmediateContinuation;
-			const outcome = await this._runAutoCompaction("threshold", shouldResumeAfterThresholdCompaction);
+			const outcome = await this._runAutoCompaction("threshold", false);
 			if (!outcome.ok) {
 				if (phase === "prePrompt") {
 					throw new Error(outcome.errorMessage ?? "Auto-compaction failed");
@@ -1953,7 +1950,7 @@ export class AgentSession {
 			if (this._isCompactionAbortLikeError(error, errorMessage, signal)) {
 				throw error;
 			}
-			return await compact(preparation, this.model, apiKey, customInstructions, signal);
+			throw new Error(`Codex remote compaction failed: ${errorMessage}`, { cause: error });
 		}
 	}
 
@@ -2311,14 +2308,14 @@ export class AgentSession {
 				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
 				tokensBefore = extensionCompaction.tokensBefore;
 				details = extensionCompaction.details;
-				} else {
-					const compactResult = await this._runCompactionWithCodexFallback(
-						preparation,
-						apiKey,
-						undefined,
-						signal,
-						sourceMessages,
-					);
+			} else {
+				const compactResult = await this._runCompactionWithCodexFallback(
+					preparation,
+					apiKey,
+					undefined,
+					signal,
+					sourceMessages,
+				);
 				summary = compactResult.summary;
 				firstKeptEntryId = compactResult.firstKeptEntryId;
 				tokensBefore = compactResult.tokensBefore;
@@ -2337,11 +2334,6 @@ export class AgentSession {
 			const postCompactionTokens = this._estimateContextTokensForThreshold(sessionContext.messages);
 			const autoCompactionThreshold = this._getAutoCompactLimit(this.model?.contextWindow ?? 0, settings);
 			const autoCompactionDiagnostic = `post-compaction context: ${postCompactionTokens} tokens, threshold: ${autoCompactionThreshold} tokens`;
-			if (postCompactionTokens >= autoCompactionThreshold) {
-				throw new Error(
-					`Compaction succeeded but context still exceeds threshold (${postCompactionTokens} tokens >= ${autoCompactionThreshold} threshold)`,
-				);
-			}
 
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
 				| CompactionEntry

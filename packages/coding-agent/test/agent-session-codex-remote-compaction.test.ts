@@ -204,50 +204,70 @@ describe("AgentSession Codex remote compaction", () => {
 		session.dispose();
 	});
 
-	it("falls back to local compaction when codex remote compaction fails", async () => {
+	it("throws when codex remote compaction fails without local fallback", async () => {
 		tempDir = join(tmpdir(), `pi-codex-compact-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 
 		const model = ai.getModel("openai-codex", "gpt-5.3-codex")!;
 		const session = createSession(model, tempDir, "codex-key");
 		seedConversation(session, model);
-
-		const firstEntry = session.sessionManager.getBranch()[0];
-		if (!firstEntry) {
-			throw new Error("expected seeded session entry");
-		}
 
 		const remoteSpy = vi
 			.spyOn(ai, "compactOpenAICodexResponses")
 			.mockRejectedValue(new Error("Codex compaction request failed"));
-		const localCompactSpy = vi.spyOn(compactionModule, "compact").mockResolvedValue({
-			summary: "Local fallback summary",
-			firstKeptEntryId: firstEntry.id,
-			tokensBefore: 220_000,
-			details: { readFiles: [], modifiedFiles: [] },
-		});
+		const localCompactSpy = vi.spyOn(compactionModule, "compact");
 
-		const result = await session.compact();
+		await expect(session.compact()).rejects.toThrow(
+			"Codex remote compaction failed: Codex compaction request failed",
+		);
 
 		expect(remoteSpy).toHaveBeenCalledTimes(1);
-		expect(localCompactSpy).toHaveBeenCalledTimes(1);
-		expect(result.summary).toBe("Local fallback summary");
+		expect(localCompactSpy).not.toHaveBeenCalled();
 
 		session.dispose();
 	});
 
-	it("falls back to local compaction when codex remote auto-compaction fails", async () => {
+	it("uses local compaction path for non-codex models", async () => {
+		tempDir = join(tmpdir(), `pi-non-codex-compact-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const model = ai.getModel("anthropic", "claude-sonnet-4-5")!;
+		const session = createSession(model, tempDir, "anthropic-key");
+
+		const localResult = {
+			summary: "Local summary",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123,
+			details: { readFiles: [], modifiedFiles: [] },
+		};
+		const localCompactSpy = vi.spyOn(compactionModule, "compact").mockResolvedValue(localResult);
+		const remoteSpy = vi.spyOn(ai, "compactOpenAICodexResponses");
+
+		const result = await (
+			session as unknown as {
+				_runCompactionWithCodexFallback: (
+					preparation: unknown,
+					apiKey: string,
+					customInstructions: string | undefined,
+					signal?: AbortSignal,
+				) => Promise<typeof localResult>;
+			}
+		)._runCompactionWithCodexFallback({} as unknown, "anthropic-key", undefined);
+
+		expect(localCompactSpy).toHaveBeenCalledTimes(1);
+		expect(remoteSpy).not.toHaveBeenCalled();
+		expect(result).toEqual(localResult);
+
+		session.dispose();
+	});
+
+	it("emits auto-compaction error when codex remote auto-compaction fails without local fallback", async () => {
 		tempDir = join(tmpdir(), `pi-codex-compact-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 
 		const model = ai.getModel("openai-codex", "gpt-5.3-codex")!;
 		const session = createSession(model, tempDir, "codex-key");
 		seedConversation(session, model);
-
-		const firstEntry = session.sessionManager.getBranch()[0];
-		if (!firstEntry) {
-			throw new Error("expected seeded session entry");
-		}
 
 		const events: AgentSessionEvent[] = [];
 		const unsubscribe = session.subscribe((event) => events.push(event));
@@ -255,28 +275,31 @@ describe("AgentSession Codex remote compaction", () => {
 		const remoteSpy = vi
 			.spyOn(ai, "compactOpenAICodexResponses")
 			.mockRejectedValue(new Error("Too many requests, please wait before trying again."));
-		const localCompactSpy = vi.spyOn(compactionModule, "compact").mockResolvedValue({
-			summary: "Auto local fallback summary",
-			firstKeptEntryId: firstEntry.id,
-			tokensBefore: 220_000,
-			details: { readFiles: [], modifiedFiles: [] },
-		});
+		const localCompactSpy = vi.spyOn(compactionModule, "compact");
 
-		await (
+		const outcome = await (
 			session as unknown as {
-				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				_runAutoCompaction: (
+					reason: "overflow" | "threshold",
+					willRetry: boolean,
+				) => Promise<{ ok: boolean; errorMessage?: string }>;
 			}
 		)._runAutoCompaction("threshold", false);
 
 		const autoCompactionEnd = events.find((event) => event.type === "auto_compaction_end");
 		expect(remoteSpy).toHaveBeenCalledTimes(1);
-		expect(localCompactSpy).toHaveBeenCalledTimes(1);
+		expect(localCompactSpy).not.toHaveBeenCalled();
+		expect(outcome.ok).toBe(false);
+		expect(outcome.errorMessage).toContain("Auto-compaction failed:");
+		expect(outcome.errorMessage).toContain("Codex remote compaction failed:");
+		expect(outcome.errorMessage).toContain("Too many requests, please wait before trying again.");
 		expect(autoCompactionEnd?.type).toBe("auto_compaction_end");
 		if (autoCompactionEnd?.type !== "auto_compaction_end") {
 			throw new Error("expected auto_compaction_end event");
 		}
-		expect(autoCompactionEnd.errorMessage).toBeUndefined();
-		expect(autoCompactionEnd.result?.summary).toBe("Auto local fallback summary");
+		expect(autoCompactionEnd.errorMessage).toContain("Auto-compaction failed:");
+		expect(autoCompactionEnd.errorMessage).toContain("Codex remote compaction failed:");
+		expect(autoCompactionEnd.result).toBeUndefined();
 
 		unsubscribe();
 		session.dispose();
