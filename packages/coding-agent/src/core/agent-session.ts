@@ -354,6 +354,15 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// For immediate tool-use continuations, abort synchronously before any awaited listener work.
+		// This prevents the agent loop from starting the next sampling step while compaction runs.
+		if (event.type === "turn_end" && event.message.role === "assistant") {
+			const assistantMessage = event.message as AssistantMessage;
+			if (this._shouldAbortForInlineThresholdCompaction(assistantMessage)) {
+				this.agent.abort();
+			}
+		}
+
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -430,22 +439,22 @@ export class AgentSession {
 		// before the next assistant turn, not only after the full agent run ends.
 		if (event.type === "turn_end" && event.message.role === "assistant") {
 			const assistantMessage = event.message as AssistantMessage;
-				if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
-					const hasImmediateContinuation = assistantMessage.stopReason === "toolUse";
-					const allowThresholdCompaction = !(
-						this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex"
-					);
-					await this._checkCompaction(
-						assistantMessage,
+			if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
+				const hasImmediateContinuation = assistantMessage.stopReason === "toolUse";
+				const allowThresholdCompaction = !(
+					this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex"
+				);
+				await this._checkCompaction(
+					assistantMessage,
 					true,
 					"postTurn",
-						hasImmediateContinuation,
-						allowThresholdCompaction,
-					);
-					if (this._lastAssistantMessage && this._lastAssistantMessage.timestamp === assistantMessage.timestamp) {
-						this._lastAssistantMessage = undefined;
-					}
+					hasImmediateContinuation,
+					allowThresholdCompaction,
+				);
+				if (this._lastAssistantMessage && this._lastAssistantMessage.timestamp === assistantMessage.timestamp) {
+					this._lastAssistantMessage = undefined;
 				}
+			}
 		}
 
 		// Check auto-retry and auto-compaction after agent completes
@@ -532,6 +541,21 @@ export class AgentSession {
 			signal?.removeEventListener("abort", abortInlineCompaction);
 		}
 	};
+
+	private _shouldAbortForInlineThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+		if (assistantMessage.stopReason !== "toolUse") return false;
+		if (!this.model) return false;
+		const contextWindow = this.model.contextWindow ?? 0;
+		if (contextWindow <= 0) return false;
+		const settings = this.settingsManager.getCompactionSettings();
+		if (!settings.enabled && !this._shouldUseCodexRemoteCompaction()) return false;
+		if (this._shouldUseNativeCompaction()) return false;
+		const usageContextTokens = calculateContextTokens(assistantMessage.usage);
+		const estimatedContextTokens = this._estimateContextTokensForThreshold(this.agent.state.messages);
+		const contextTokens = Math.max(usageContextTokens, estimatedContextTokens);
+		const compactLimit = this._getAutoCompactLimit(contextWindow, settings);
+		return contextTokens >= compactLimit;
+	}
 
 	/** Resolve the pending retry promise */
 	private _resolveRetry(): void {
@@ -1832,7 +1856,10 @@ export class AgentSession {
 
 		if (shouldCompactNow || this._pendingThresholdCompaction) {
 			this._pendingThresholdCompaction = false;
-			const outcome = await this._runAutoCompaction("threshold", false);
+			// For immediate tool-use continuation, resume from compacted context after success.
+			// This matches codex-rs inline continuation semantics after pre-sampling compaction.
+			const shouldResumeAfterThresholdCompaction = hasImmediateContinuation;
+			const outcome = await this._runAutoCompaction("threshold", shouldResumeAfterThresholdCompaction);
 			if (!outcome.ok) {
 				if (phase === "prePrompt") {
 					throw new Error(outcome.errorMessage ?? "Auto-compaction failed");
@@ -2334,6 +2361,11 @@ export class AgentSession {
 			const postCompactionTokens = this._estimateContextTokensForThreshold(sessionContext.messages);
 			const autoCompactionThreshold = this._getAutoCompactLimit(this.model?.contextWindow ?? 0, settings);
 			const autoCompactionDiagnostic = `post-compaction context: ${postCompactionTokens} tokens, threshold: ${autoCompactionThreshold} tokens`;
+			if (postCompactionTokens >= autoCompactionThreshold) {
+				throw new Error(
+					`Compaction succeeded but context still exceeds threshold (${postCompactionTokens} tokens >= ${autoCompactionThreshold} threshold)`,
+				);
+			}
 
 			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
 				| CompactionEntry

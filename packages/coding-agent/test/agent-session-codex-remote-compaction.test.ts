@@ -304,4 +304,97 @@ describe("AgentSession Codex remote compaction", () => {
 		unsubscribe();
 		session.dispose();
 	});
+
+	it("fails auto-compaction when compaction succeeds but context still exceeds threshold", async () => {
+		tempDir = join(tmpdir(), `pi-codex-compact-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const model = ai.getModel("openai-codex", "gpt-5.3-codex")!;
+		const session = createSession(model, tempDir, "codex-key");
+		seedConversation(session, model);
+		const branchHead = session.sessionManager.getBranch()[0];
+		if (!branchHead) {
+			throw new Error("expected seeded conversation entry");
+		}
+
+		const threshold = (
+			session as unknown as {
+				_getAutoCompactLimit: (contextWindow: number, settings: { reserveTokens: number }) => number;
+			}
+		)._getAutoCompactLimit(model.contextWindow ?? 0, { reserveTokens: 16_384 });
+		const targetTokens = Number.isFinite(threshold) ? Math.floor(threshold) + 1_000 : 300_000;
+		const oversizedAssistant = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "x".repeat(targetTokens * 4) }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			stopReason: "stop" as const,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+
+		const fallbackSpy = vi
+			.spyOn(
+				session as unknown as {
+					_runCompactionWithCodexFallback: (
+						preparation: unknown,
+						apiKey: string,
+						customInstructions: string | undefined,
+						signal?: AbortSignal,
+					) => Promise<{
+						summary: string;
+						firstKeptEntryId: string;
+						tokensBefore: number;
+						details: unknown;
+					}>;
+				},
+				"_runCompactionWithCodexFallback",
+			)
+			.mockResolvedValue({
+				summary: "remote summary",
+				firstKeptEntryId: branchHead.id,
+				tokensBefore: 220_000,
+				details: {
+					readFiles: [],
+					modifiedFiles: [],
+					replacementMessages: [oversizedAssistant],
+				},
+			});
+
+		const events: AgentSessionEvent[] = [];
+		const unsubscribe = session.subscribe((event) => events.push(event));
+
+		const outcome = await (
+			session as unknown as {
+				_runAutoCompaction: (
+					reason: "overflow" | "threshold",
+					willRetry: boolean,
+				) => Promise<{ ok: boolean; errorMessage?: string }>;
+			}
+		)._runAutoCompaction("threshold", false);
+
+		expect(fallbackSpy).toHaveBeenCalledTimes(1);
+		expect(outcome.ok).toBe(false);
+		expect(outcome.errorMessage).toContain("Auto-compaction failed:");
+		expect(outcome.errorMessage).toContain("Compaction succeeded but context still exceeds threshold");
+
+		const autoCompactionEnd = events.find((event) => event.type === "auto_compaction_end");
+		expect(autoCompactionEnd?.type).toBe("auto_compaction_end");
+		if (autoCompactionEnd?.type !== "auto_compaction_end") {
+			throw new Error("expected auto_compaction_end event");
+		}
+		expect(autoCompactionEnd.errorMessage).toContain("Compaction succeeded but context still exceeds threshold");
+		expect(autoCompactionEnd.result).toBeUndefined();
+
+		unsubscribe();
+		session.dispose();
+	});
 });

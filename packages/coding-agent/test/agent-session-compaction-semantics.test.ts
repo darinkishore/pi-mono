@@ -12,10 +12,10 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
-function makeAssistant(model: Model<any>, totalTokens: number, timestamp = Date.now()): AssistantMessage {
+function makeAssistant(model: Model<any>, totalTokens: number, timestamp = Date.now(), text = "ok"): AssistantMessage {
 	return {
 		role: "assistant",
-		content: [{ type: "text", text: "ok" }],
+		content: [{ type: "text", text }],
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
@@ -178,7 +178,7 @@ describe("AgentSession compaction semantics", () => {
 		)._checkCompaction(assistant, true, "postTurn", true);
 
 		expect(runAutoCompaction).toHaveBeenCalledTimes(1);
-		expect(runAutoCompaction).toHaveBeenCalledWith("threshold", false);
+		expect(runAutoCompaction).toHaveBeenCalledWith("threshold", true);
 		expect(
 			(
 				session as unknown as {
@@ -367,6 +367,49 @@ describe("AgentSession compaction semantics", () => {
 		session.dispose();
 	});
 
+	it("falls back to estimated context tokens when assistant usage is zero", async () => {
+		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const codexModel = getModel("openai-codex", "gpt-5.3-codex")!;
+		const session = createSession(codexModel, tempDir, "codex-key", true);
+		const runAutoCompaction = vi
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (
+						r: "overflow" | "threshold",
+						w: boolean,
+					) => Promise<{ ok: boolean; errorMessage?: string }>;
+				},
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue(AUTO_COMPACTION_OK);
+
+		const threshold = (
+			session as unknown as {
+				_getAutoCompactLimit: (contextWindow: number, settings: { reserveTokens: number }) => number;
+			}
+		)._getAutoCompactLimit(codexModel.contextWindow ?? 0, { reserveTokens: 16_384 });
+		const targetTokens = Number.isFinite(threshold) ? Math.floor(threshold) + 1_000 : 300_000;
+		const largeAssistant = makeAssistant(codexModel, 0, Date.now(), "x".repeat(targetTokens * 4));
+
+		session.agent.replaceMessages([largeAssistant]);
+
+		await (
+			session as unknown as {
+				_checkCompaction: (
+					message: AssistantMessage,
+					skipAbortedCheck: boolean,
+					phase: "postTurn" | "prePrompt",
+				) => Promise<void>;
+			}
+		)._checkCompaction(largeAssistant, false, "prePrompt");
+
+		expect(runAutoCompaction).toHaveBeenCalledTimes(1);
+		expect(runAutoCompaction).toHaveBeenCalledWith("threshold", false);
+		session.dispose();
+	});
+
 	it("keeps non-codex models disabled when auto-compaction is turned off", async () => {
 		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
@@ -443,6 +486,52 @@ describe("AgentSession compaction semantics", () => {
 
 		expect(checkCompaction).toHaveBeenCalledTimes(1);
 		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn", false);
+		session.dispose();
+	});
+
+	it("aborts synchronously on tool-use turn_end when threshold is exceeded", async () => {
+		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const model = getModel("openai-codex", "gpt-5.3-codex")!;
+		const session = createSession(model, tempDir, "codex-key");
+		const assistant = makeAssistant(model, 250_000);
+		assistant.stopReason = "toolUse";
+		session.agent.replaceMessages([assistant]);
+
+		const abortSpy = vi.spyOn(session.agent, "abort");
+		const checkCompaction = vi
+			.spyOn(
+				session as unknown as {
+					_checkCompaction: (
+						message: AssistantMessage,
+						skipAbortedCheck: boolean,
+						phase: "postTurn" | "prePrompt",
+						hasImmediateContinuation?: boolean,
+					) => Promise<void>;
+				},
+				"_checkCompaction",
+			)
+			.mockResolvedValue();
+
+		const handleAgentEvent = (
+			session as unknown as {
+				_handleAgentEvent: (event: unknown) => Promise<void>;
+			}
+		)._handleAgentEvent;
+
+		const eventPromise = handleAgentEvent({
+			type: "turn_end",
+			message: assistant,
+			toolResults: [],
+		});
+
+		expect(abortSpy).toHaveBeenCalledTimes(1);
+
+		await eventPromise;
+
+		expect(checkCompaction).toHaveBeenCalledTimes(1);
+		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn", true);
 		session.dispose();
 	});
 });
