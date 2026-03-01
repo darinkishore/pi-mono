@@ -308,7 +308,11 @@ describe("AgentSession Codex compaction double failure", () => {
 				summary: string;
 				firstKeptEntryId: string;
 				tokensBefore: number;
-				details: { readFiles: string[]; modifiedFiles: string[] };
+				details: {
+					readFiles: string[];
+					modifiedFiles: string[];
+					replacementMessages?: Message[];
+				};
 			}) => void
 		> = [];
 		const fallbackSpy = vi
@@ -318,7 +322,11 @@ describe("AgentSession Codex compaction double failure", () => {
 						summary: string;
 						firstKeptEntryId: string;
 						tokensBefore: number;
-						details: { readFiles: string[]; modifiedFiles: string[] };
+						details: {
+							readFiles: string[];
+							modifiedFiles: string[];
+							replacementMessages?: Message[];
+						};
 					}>;
 				},
 				"_runCompactionWithCodexFallback",
@@ -354,7 +362,17 @@ describe("AgentSession Codex compaction double failure", () => {
 			summary: "compacted",
 			firstKeptEntryId: firstEntry.id,
 			tokensBefore: 250_000,
-			details: { readFiles: [], modifiedFiles: [] },
+			details: {
+				readFiles: [],
+				modifiedFiles: [],
+				replacementMessages: [
+					{
+						role: "user" as const,
+						content: [{ type: "text" as const, text: "compacted summary" }],
+						timestamp: Date.now(),
+					},
+				],
+			},
 		};
 
 		const firstResolver = pendingResolvers[0];

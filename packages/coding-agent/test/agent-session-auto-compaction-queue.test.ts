@@ -21,6 +21,7 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		details: {},
 	}),
 	estimateContextTokens: () => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: -1 }),
+	estimateTokens: () => 1,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	prepareCompaction: () => ({ dummy: true }),
 	shouldCompact: () => false,
@@ -85,7 +86,10 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		const runAutoCompaction = (
 			session as unknown as {
-				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				_runAutoCompaction: (
+					reason: "overflow" | "threshold",
+					willRetry: boolean,
+				) => Promise<{ ok: boolean; errorMessage?: string }>;
 			}
 		)._runAutoCompaction.bind(session);
 
