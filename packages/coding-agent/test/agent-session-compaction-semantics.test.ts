@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent } from "@mariozechner/pi-agent-core";
+import { Agent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, Model } from "@mariozechner/pi-ai";
 import { getModel } from "@mariozechner/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -457,6 +457,7 @@ describe("AgentSession compaction semantics", () => {
 						skipAbortedCheck: boolean,
 						phase: "postTurn" | "prePrompt",
 						hasImmediateContinuation?: boolean,
+						allowThresholdCompaction?: boolean,
 					) => Promise<void>;
 				},
 				"_checkCompaction",
@@ -485,11 +486,11 @@ describe("AgentSession compaction semantics", () => {
 		});
 
 		expect(checkCompaction).toHaveBeenCalledTimes(1);
-		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn", false);
+		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn", false, true);
 		session.dispose();
 	});
 
-	it("aborts synchronously on tool-use turn_end when threshold is exceeded", async () => {
+	it("does not use sync-abort seam for codex tool-use turn_end threshold checks", async () => {
 		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -508,6 +509,7 @@ describe("AgentSession compaction semantics", () => {
 						skipAbortedCheck: boolean,
 						phase: "postTurn" | "prePrompt",
 						hasImmediateContinuation?: boolean,
+						allowThresholdCompaction?: boolean,
 					) => Promise<void>;
 				},
 				"_checkCompaction",
@@ -526,12 +528,103 @@ describe("AgentSession compaction semantics", () => {
 			toolResults: [],
 		});
 
-		expect(abortSpy).toHaveBeenCalledTimes(1);
+		expect(abortSpy).not.toHaveBeenCalled();
 
 		await eventPromise;
 
 		expect(checkCompaction).toHaveBeenCalledTimes(1);
-		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn", true);
+		expect(checkCompaction).toHaveBeenCalledWith(assistant, true, "postTurn", true, false);
+		session.dispose();
+	});
+
+	it("runs codex threshold compaction from beforeSampling and returns updated messages", async () => {
+		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const model = getModel("openai-codex", "gpt-5.3-codex")!;
+		const session = createSession(model, tempDir, "codex-key");
+		const updatedMessages = [{ role: "user", content: "compacted", timestamp: Date.now() }] as AgentMessage[];
+		const performCompaction = vi
+			.spyOn(
+				session as unknown as {
+					_performCompaction: (
+						reason: "overflow" | "threshold",
+						signal: AbortSignal,
+						willRetry: boolean,
+					) => Promise<{ ok: boolean; messages?: AgentMessage[]; errorMessage?: string }>;
+				},
+				"_performCompaction",
+			)
+			.mockResolvedValue({ ok: true, messages: updatedMessages });
+
+		(
+			session as unknown as {
+				_pendingThresholdCompaction: boolean;
+			}
+		)._pendingThresholdCompaction = true;
+
+		const beforeSampling = (
+			session as unknown as {
+				_handleBeforeSampling: (
+					context: { messages: AgentMessage[] },
+					signal?: AbortSignal,
+				) => Promise<AgentMessage[] | void>;
+			}
+		)._handleBeforeSampling;
+
+		const result = await beforeSampling({ messages: [] });
+
+		expect(performCompaction).toHaveBeenCalledTimes(1);
+		expect(performCompaction.mock.calls[0]?.[0]).toBe("threshold");
+		expect(performCompaction.mock.calls[0]?.[2]).toBe(false);
+		expect(result).toBe(updatedMessages);
+		expect(
+			(
+				session as unknown as {
+					_pendingThresholdCompaction: boolean;
+				}
+			)._pendingThresholdCompaction,
+		).toBe(false);
+		session.dispose();
+	});
+
+	it("aborts the turn when inline beforeSampling compaction fails", async () => {
+		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const model = getModel("openai-codex", "gpt-5.3-codex")!;
+		const session = createSession(model, tempDir, "codex-key");
+		const assistant = makeAssistant(model, 260_000);
+		session.agent.replaceMessages([assistant]);
+
+		const performCompaction = vi
+			.spyOn(
+				session as unknown as {
+					_performCompaction: (
+						reason: "overflow" | "threshold",
+						signal: AbortSignal,
+						willRetry: boolean,
+					) => Promise<{ ok: boolean; messages?: AgentMessage[]; errorMessage?: string }>;
+				},
+				"_performCompaction",
+			)
+			.mockResolvedValue({ ok: false, errorMessage: "Auto-compaction failed: synthetic" });
+		const abortSpy = vi.spyOn(session.agent, "abort");
+		const continueSpy = vi.spyOn(session.agent, "continue");
+
+		const beforeSampling = (
+			session as unknown as {
+				_handleBeforeSampling: (
+					context: { messages: AgentMessage[] },
+					signal?: AbortSignal,
+				) => Promise<AgentMessage[] | void>;
+			}
+		)._handleBeforeSampling;
+
+		await expect(beforeSampling({ messages: [assistant] })).rejects.toThrow("Auto-compaction failed: synthetic");
+		expect(performCompaction).toHaveBeenCalledTimes(1);
+		expect(abortSpy).toHaveBeenCalledTimes(1);
+		expect(continueSpy).not.toHaveBeenCalled();
 		session.dispose();
 	});
 });

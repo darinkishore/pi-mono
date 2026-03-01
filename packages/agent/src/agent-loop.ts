@@ -98,6 +98,31 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 	);
 }
 
+function createLoopErrorAssistantMessage(
+	config: AgentLoopConfig,
+	error: unknown,
+	signal?: AbortSignal,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "" }],
+		api: config.model.api,
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: signal?.aborted ? "aborted" : "error",
+		errorMessage: error instanceof Error ? error.message : String(error),
+		timestamp: Date.now(),
+	};
+}
+
 /**
  * Main loop logic shared by agentLoop and agentLoopContinue.
  */
@@ -115,6 +140,9 @@ async function runLoop(
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
+		if (signal?.aborted) {
+			break;
+		}
 		let hasMoreToolCalls = true;
 		let steeringAfterTools: AgentMessage[] | null = null;
 
@@ -135,6 +163,30 @@ async function runLoop(
 					newMessages.push(message);
 				}
 				pendingMessages = [];
+			}
+
+			if (signal?.aborted) {
+				break;
+			}
+			if (config.beforeSampling) {
+				try {
+					const updatedMessages = await config.beforeSampling(currentContext, signal);
+					if (updatedMessages) {
+						currentContext.messages = updatedMessages;
+					}
+				} catch (error) {
+					const errorMessage = createLoopErrorAssistantMessage(config, error, signal);
+					newMessages.push(errorMessage);
+					stream.push({ type: "message_start", message: errorMessage });
+					stream.push({ type: "message_end", message: errorMessage });
+					stream.push({ type: "turn_end", message: errorMessage, toolResults: [] });
+					stream.push({ type: "agent_end", messages: newMessages });
+					stream.end(newMessages);
+					return;
+				}
+			}
+			if (signal?.aborted) {
+				break;
 			}
 
 			// Stream assistant response
@@ -179,6 +231,9 @@ async function runLoop(
 			} else {
 				pendingMessages = (await config.getSteeringMessages?.()) || [];
 			}
+		}
+		if (signal?.aborted) {
+			break;
 		}
 
 		// Agent would stop here. Check for follow-up messages.

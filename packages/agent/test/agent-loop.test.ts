@@ -236,6 +236,224 @@ describe("agentLoop with AgentMessage", () => {
 		expect(convertedMessages.length).toBe(2);
 	});
 
+	it("awaits beforeSampling before starting streamAssistantResponse", async () => {
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [],
+		};
+		const userPrompt: AgentMessage = createUserMessage("hello");
+		const order: string[] = [];
+		let resolveBeforeSampling: (() => void) | undefined;
+		const beforeSamplingGate = new Promise<void>((resolve) => {
+			resolveBeforeSampling = resolve;
+		});
+		let streamCalls = 0;
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeSampling: async () => {
+				order.push("before:start");
+				await beforeSamplingGate;
+				order.push("before:end");
+				return undefined;
+			},
+		};
+
+		const streamFn = () => {
+			streamCalls++;
+			order.push("stream:start");
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = createAssistantMessage([{ type: "text", text: "done" }]);
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(order).toContain("before:start");
+		expect(streamCalls).toBe(0);
+
+		resolveBeforeSampling?.();
+		for await (const _ of stream) {
+			// consume
+		}
+
+		expect(order).toEqual(["before:start", "before:end", "stream:start"]);
+		expect(streamCalls).toBe(1);
+	});
+
+	it("uses messages returned by beforeSampling for the next request", async () => {
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [],
+		};
+		const userPrompt: AgentMessage = createUserMessage("original");
+		let sampledMessages: Message[] = [];
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeSampling: async () => {
+				return [createUserMessage("compacted-context")];
+			},
+		};
+
+		const streamFn = (_model: Model<any>, llmContext: { messages: Message[] }) => {
+			sampledMessages = llmContext.messages;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = createAssistantMessage([{ type: "text", text: "ok" }]);
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const _ of stream) {
+			// consume
+		}
+
+		expect(sampledMessages.length).toBe(1);
+		expect(sampledMessages[0]).toMatchObject({ role: "user", content: "compacted-context" });
+	});
+
+	it("keeps existing context when beforeSampling returns undefined", async () => {
+		const prior = createUserMessage("prior");
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [prior],
+			tools: [],
+		};
+		const userPrompt: AgentMessage = createUserMessage("new");
+		let sampledMessages: Message[] = [];
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeSampling: async () => undefined,
+		};
+
+		const streamFn = (_model: Model<any>, llmContext: { messages: Message[] }) => {
+			sampledMessages = llmContext.messages;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = createAssistantMessage([{ type: "text", text: "ok" }]);
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const _ of stream) {
+			// consume
+		}
+
+		expect(sampledMessages.length).toBe(2);
+		expect(sampledMessages[0]).toMatchObject({ role: "user", content: "prior" });
+		expect(sampledMessages[1]).toMatchObject({ role: "user", content: "new" });
+	});
+
+	it("passes signal to beforeSampling and stops sampling when aborted there", async () => {
+		const controller = new AbortController();
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [],
+		};
+		const userPrompt: AgentMessage = createUserMessage("hello");
+		let seenSignal: AbortSignal | undefined;
+		let streamCalls = 0;
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeSampling: async (_context, signal) => {
+				seenSignal = signal;
+				controller.abort();
+				return undefined;
+			},
+		};
+
+		const streamFn = () => {
+			streamCalls++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = createAssistantMessage([{ type: "text", text: "should-not-run" }]);
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, controller.signal, streamFn);
+		const events: AgentEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		expect(seenSignal).toBe(controller.signal);
+		expect(streamCalls).toBe(0);
+		expect(events.some((event) => event.type === "agent_end")).toBe(true);
+	});
+
+	it("emits turn_end and agent_end when beforeSampling throws", async () => {
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [],
+		};
+		const userPrompt: AgentMessage = createUserMessage("hello");
+		let streamCalls = 0;
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeSampling: async () => {
+				throw new Error("beforeSampling failed");
+			},
+		};
+
+		const streamFn = () => {
+			streamCalls++;
+			const stream = new MockAssistantStream();
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		const events: AgentEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		expect(streamCalls).toBe(0);
+
+		const turnEnd = events.find((event) => event.type === "turn_end");
+		expect(turnEnd).toBeDefined();
+		if (!turnEnd || turnEnd.type !== "turn_end" || turnEnd.message.role !== "assistant") {
+			throw new Error("Expected assistant turn_end");
+		}
+		expect(turnEnd.message.stopReason).toBe("error");
+		expect(turnEnd.message.errorMessage).toBe("beforeSampling failed");
+
+		const agentEnd = events.find((event) => event.type === "agent_end");
+		expect(agentEnd).toBeDefined();
+		if (!agentEnd || agentEnd.type !== "agent_end") {
+			throw new Error("Expected agent_end");
+		}
+		const lastMessage = agentEnd.messages[agentEnd.messages.length - 1];
+		if (!lastMessage || lastMessage.role !== "assistant") {
+			throw new Error("Expected assistant message in agent_end");
+		}
+		expect(lastMessage.stopReason).toBe("error");
+		expect(lastMessage.errorMessage).toBe("beforeSampling failed");
+	});
+
 	it("should handle tool calls and results", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executed: string[] = [];

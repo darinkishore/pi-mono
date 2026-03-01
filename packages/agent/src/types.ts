@@ -95,6 +95,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Use this for follow-up messages that should wait until the agent finishes.
 	 */
 	getFollowUpMessages?: () => Promise<AgentMessage[]>;
+
+	/**
+	 * Optional hook invoked inline before each sampling request.
+	 *
+	 * Can return an updated message list (for example, after inline compaction).
+	 * When a list is returned, the loop replaces `context.messages` with it for
+	 * the upcoming request.
+	 */
+	beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>;
 }
 
 /**
