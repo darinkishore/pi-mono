@@ -211,6 +211,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * The hook receives the agent abort signal and is responsible for honoring it.
 	 */
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+
+	/**
+	 * Optional hook invoked inline before each sampling request.
+	 *
+	 * Can return an updated message list (for example, after inline compaction).
+	 * When a list is returned, the loop replaces `context.messages` with it for
+	 * the upcoming request.
+	 */
+	beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>;
 }
 
 /**

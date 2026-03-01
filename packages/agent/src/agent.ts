@@ -55,6 +55,12 @@ export interface AgentOptions {
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 
 	/**
+	 * Optional hook invoked inline before each sampling request.
+	 * Return updated messages to replace the loop's context snapshot.
+	 */
+	beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>;
+
+	/**
 	 * Steering mode: "all" = send all steering messages at once, "one-at-a-time" = one per turn
 	 */
 	steeringMode?: "all" | "one-at-a-time";
@@ -136,6 +142,7 @@ export class Agent {
 	private abortController?: AbortController;
 	private convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	private transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+	private _beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>;
 	private steeringQueue: AgentMessage[] = [];
 	private followUpQueue: AgentMessage[] = [];
 	private steeringMode: "all" | "one-at-a-time";
@@ -164,6 +171,7 @@ export class Agent {
 		this._state = { ...this._state, ...opts.initialState };
 		this.convertToLlm = opts.convertToLlm || defaultConvertToLlm;
 		this.transformContext = opts.transformContext;
+		this._beforeSampling = opts.beforeSampling;
 		this.steeringMode = opts.steeringMode || "one-at-a-time";
 		this.followUpMode = opts.followUpMode || "one-at-a-time";
 		this.streamFn = opts.streamFn || streamSimple;
@@ -192,6 +200,24 @@ export class Agent {
 	 */
 	set sessionId(value: string | undefined) {
 		this._sessionId = value;
+	}
+
+	/**
+	 * Get the current before-sampling hook.
+	 */
+	get beforeSampling():
+		| ((context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>)
+		| undefined {
+		return this._beforeSampling;
+	}
+
+	/**
+	 * Set the before-sampling hook.
+	 */
+	set beforeSampling(
+		value: ((context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>) | undefined,
+	) {
+		this._beforeSampling = value;
 	}
 
 	/**
@@ -558,6 +584,7 @@ export class Agent {
 			nativeCompaction: this._nativeCompaction,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
+			beforeSampling: this._beforeSampling,
 			getApiKey: this.getApiKey,
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {

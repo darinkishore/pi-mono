@@ -354,15 +354,6 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
-		// For immediate tool-use continuations, abort synchronously before any awaited listener work.
-		// This prevents the agent loop from starting the next sampling step while compaction runs.
-		if (event.type === "turn_end" && event.message.role === "assistant") {
-			const assistantMessage = event.message as AssistantMessage;
-			if (this._shouldAbortForInlineThresholdCompaction(assistantMessage)) {
-				this.agent.abort();
-			}
-		}
-
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -441,9 +432,8 @@ export class AgentSession {
 			const assistantMessage = event.message as AssistantMessage;
 			if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
 				const hasImmediateContinuation = assistantMessage.stopReason === "toolUse";
-				const allowThresholdCompaction = !(
-					this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex"
-				);
+				const allowThresholdCompaction =
+					!(this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex");
 				await this._checkCompaction(
 					assistantMessage,
 					true,
@@ -542,21 +532,6 @@ export class AgentSession {
 		}
 	};
 
-	private _shouldAbortForInlineThresholdCompaction(assistantMessage: AssistantMessage): boolean {
-		if (assistantMessage.stopReason !== "toolUse") return false;
-		if (!this.model) return false;
-		const contextWindow = this.model.contextWindow ?? 0;
-		if (contextWindow <= 0) return false;
-		const settings = this.settingsManager.getCompactionSettings();
-		if (!settings.enabled && !this._shouldUseCodexRemoteCompaction()) return false;
-		if (this._shouldUseNativeCompaction()) return false;
-		const usageContextTokens = calculateContextTokens(assistantMessage.usage);
-		const estimatedContextTokens = this._estimateContextTokensForThreshold(this.agent.state.messages);
-		const contextTokens = Math.max(usageContextTokens, estimatedContextTokens);
-		const compactLimit = this._getAutoCompactLimit(contextWindow, settings);
-		return contextTokens >= compactLimit;
-	}
-
 	/** Resolve the pending retry promise */
 	private _resolveRetry(): void {
 		if (this._retryResolve) {
@@ -576,9 +551,7 @@ export class AgentSession {
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
-	private _findLastAssistantMessage(
-		messages: AgentMessage[] = this.agent.state.messages,
-	): AssistantMessage | undefined {
+	private _findLastAssistantMessage(messages: AgentMessage[] = this.agent.state.messages): AssistantMessage | undefined {
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const msg = messages[i];
 			if (msg.role === "assistant") {
