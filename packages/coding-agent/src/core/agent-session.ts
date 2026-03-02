@@ -223,8 +223,6 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 const CODEX_REMOTE_COMPACTION_SUMMARY_PREFIX = "Another language model started to solve this problem";
-const CODEX_REMOTE_COMPACTION_MAX_TRIM_RETRIES = 8;
-const CODEX_REMOTE_COMPACTION_TRIM_RATIO = 0.25;
 const CODEX_REMOTE_COMPACTION_MIN_MESSAGES = 1;
 
 // ============================================================================
@@ -434,8 +432,9 @@ export class AgentSession {
 			const assistantMessage = event.message as AssistantMessage;
 			if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "aborted") {
 				const hasImmediateContinuation = assistantMessage.stopReason === "toolUse";
-				const allowThresholdCompaction =
-					!(this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex");
+				const allowThresholdCompaction = !(
+					this.model?.provider === "openai-codex" || assistantMessage.provider === "openai-codex"
+				);
 				await this._checkCompaction(
 					assistantMessage,
 					true,
@@ -553,7 +552,9 @@ export class AgentSession {
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
-	private _findLastAssistantMessage(messages: AgentMessage[] = this.agent.state.messages): AssistantMessage | undefined {
+	private _findLastAssistantMessage(
+		messages: AgentMessage[] = this.agent.state.messages,
+	): AssistantMessage | undefined {
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const msg = messages[i];
 			if (msg.role === "assistant") {
@@ -1983,7 +1984,6 @@ export class AgentSession {
 
 		const codexModel = this.model as Model<"openai-codex-responses">;
 		let compactMessages = convertToLlm(sourceMessages ?? this.agent.state.messages);
-		let compactOverflowRetries = 0;
 		let replacementMessages: Message[] | undefined;
 
 		while (replacementMessages === undefined) {
@@ -2000,14 +2000,11 @@ export class AgentSession {
 					},
 				);
 			} catch (error) {
-				const canRetry =
-					this._isCodexCompactionOverflowError(error, codexModel) &&
-					compactOverflowRetries < CODEX_REMOTE_COMPACTION_MAX_TRIM_RETRIES;
-				const trimmedMessages = this._trimCodexCompactionMessages(compactMessages);
+				const canRetry = this._isCodexCompactionOverflowError(error, codexModel);
+				const trimmedMessages = this._trimCodexCompactionMessagesForRetry(compactMessages);
 				if (!canRetry || trimmedMessages.length >= compactMessages.length) {
 					throw error;
 				}
-				compactOverflowRetries++;
 				compactMessages = trimmedMessages;
 			}
 		}
@@ -2055,9 +2052,141 @@ export class AgentSession {
 		if (messages.length <= CODEX_REMOTE_COMPACTION_MIN_MESSAGES) {
 			return messages;
 		}
-		const trimCount = Math.max(1, Math.floor(messages.length * CODEX_REMOTE_COMPACTION_TRIM_RATIO));
-		const keepCount = Math.max(CODEX_REMOTE_COMPACTION_MIN_MESSAGES, messages.length - trimCount);
-		return messages.slice(messages.length - keepCount);
+		const trimmedMessages = [...messages];
+		const tailMessage = trimmedMessages[trimmedMessages.length - 1];
+		if (!tailMessage) {
+			return messages;
+		}
+		if (tailMessage.role !== "assistant" && tailMessage.role !== "toolResult") {
+			return messages;
+		}
+		const removedMessage = trimmedMessages.pop();
+		if (!removedMessage) {
+			return messages;
+		}
+		if (removedMessage.role === "toolResult") {
+			this._removeAssistantToolCallById(trimmedMessages, removedMessage.toolCallId);
+		} else if (removedMessage.role === "assistant") {
+			this._removeToolResultsByCallIds(trimmedMessages, this._collectAssistantToolCallIds(removedMessage));
+		}
+		const withoutOrphans = this._removeOrphanCodexToolResults(trimmedMessages);
+		return this._ensureCodexToolCallResults(withoutOrphans);
+	}
+
+	private _trimCodexCompactionMessagesForRetry(messages: Message[]): Message[] {
+		const settings = this.settingsManager.getCompactionSettings();
+		const contextWindow = this.model?.contextWindow ?? 0;
+		const compactLimit = this._getAutoCompactLimit(contextWindow, settings);
+		let trimmedMessages = messages;
+		let estimatedTokens = this._estimateContextTokensForThreshold(trimmedMessages as AgentMessage[]);
+		let hasTrimmed = false;
+		while (trimmedMessages.length > CODEX_REMOTE_COMPACTION_MIN_MESSAGES) {
+			if (hasTrimmed && estimatedTokens <= compactLimit) {
+				break;
+			}
+			const nextTrimmedMessages = this._trimCodexCompactionMessages(trimmedMessages);
+			if (nextTrimmedMessages.length >= trimmedMessages.length) {
+				break;
+			}
+			trimmedMessages = nextTrimmedMessages;
+			hasTrimmed = true;
+			estimatedTokens = this._estimateContextTokensForThreshold(trimmedMessages as AgentMessage[]);
+		}
+
+		return trimmedMessages;
+	}
+
+	private _collectAssistantToolCallIds(message: AssistantMessage): Set<string> {
+		const toolCallIds = new Set<string>();
+		for (const block of message.content) {
+			if (block.type === "toolCall") {
+				toolCallIds.add(block.id);
+			}
+		}
+		return toolCallIds;
+	}
+
+	private _removeAssistantToolCallById(messages: Message[], toolCallId: string): void {
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index];
+			if (!message || message.role !== "assistant") {
+				continue;
+			}
+			const nextContent = message.content.filter((block) => block.type !== "toolCall" || block.id !== toolCallId);
+			if (nextContent.length === message.content.length) {
+				continue;
+			}
+			if (nextContent.length === 0) {
+				messages.splice(index, 1);
+			} else {
+				messages[index] = {
+					...message,
+					content: nextContent,
+				};
+			}
+			return;
+		}
+	}
+
+	private _removeToolResultsByCallIds(messages: Message[], toolCallIds: Set<string>): void {
+		if (toolCallIds.size === 0) {
+			return;
+		}
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index];
+			if (message?.role === "toolResult" && toolCallIds.has(message.toolCallId)) {
+				messages.splice(index, 1);
+			}
+		}
+	}
+
+	private _removeOrphanCodexToolResults(messages: Message[]): Message[] {
+		const assistantToolCallIds = new Set<string>();
+		for (const message of messages) {
+			if (message.role !== "assistant") {
+				continue;
+			}
+			for (const block of message.content) {
+				if (block.type === "toolCall") {
+					assistantToolCallIds.add(block.id);
+				}
+			}
+		}
+		return messages.filter(
+			(message) => message.role !== "toolResult" || assistantToolCallIds.has(message.toolCallId),
+		);
+	}
+
+	private _ensureCodexToolCallResults(messages: Message[]): Message[] {
+		const toolResultIds = new Set<string>();
+		for (const message of messages) {
+			if (message.role === "toolResult") {
+				toolResultIds.add(message.toolCallId);
+			}
+		}
+
+		const normalizedMessages: Message[] = [];
+		for (const message of messages) {
+			normalizedMessages.push(message);
+			if (message.role !== "assistant") {
+				continue;
+			}
+			for (const block of message.content) {
+				if (block.type !== "toolCall" || toolResultIds.has(block.id)) {
+					continue;
+				}
+				normalizedMessages.push({
+					role: "toolResult",
+					toolCallId: block.id,
+					toolName: block.name,
+					content: [{ type: "text", text: "aborted" }],
+					isError: true,
+					timestamp: message.timestamp,
+				});
+				toolResultIds.add(block.id);
+			}
+		}
+		return normalizedMessages;
 	}
 
 	private _estimateContextTokensForThreshold(messages: AgentMessage[]): number {
@@ -2864,7 +2993,7 @@ export class AgentSession {
 	 * @returns true if switch completed, false if cancelled by extension
 	 */
 	async switchSession(sessionPath: string): Promise<boolean> {
-		const previousSessionFile = this.sessionManager.getSessionFile();
+		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event (can be cancelled)
 		if (this._extensionRunner?.hasHandlers("session_before_switch")) {
@@ -2901,7 +3030,7 @@ export class AgentSession {
 			});
 		}
 
-		// Emit session event to custom tools
+		// Emit session event to custom tools (with reason "fork")
 
 		this.agent.replaceMessages(sessionContext.messages);
 
