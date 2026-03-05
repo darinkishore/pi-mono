@@ -258,7 +258,7 @@ describe("AgentSession Codex remote compaction", () => {
 		session.dispose();
 	});
 
-	it("trims old context locally and retries codex remote compaction when /compact overflows", async () => {
+	it("pre-trims old context locally before codex remote compaction when /compact would overflow", async () => {
 		tempDir = join(tmpdir(), `pi-codex-compact-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -286,18 +286,13 @@ describe("AgentSession Codex remote compaction", () => {
 
 		const result = await session.compact();
 
-		expect(remoteSpy).toHaveBeenCalledTimes(2);
+		expect(remoteSpy).toHaveBeenCalledTimes(1);
 		const firstCount = seenMessageCounts[0];
-		const secondCount = seenMessageCounts[1];
-		if (firstCount === undefined || secondCount === undefined) {
-			throw new Error("Expected two compaction attempts");
+		if (firstCount === undefined) {
+			throw new Error("Expected one compaction attempt");
 		}
-		expect(firstCount).toBeGreaterThan(20);
-		if (secondCount === undefined) {
-			throw new Error("Expected a second compaction attempt with trimmed context");
-		}
-		expect(secondCount).toBeLessThanOrEqual(18);
-		expect(firstCount - secondCount).toBeGreaterThan(1);
+		expect(firstCount).toBeLessThanOrEqual(18);
+		expect(firstCount).toBeLessThan(25);
 		expect(result.summary).toContain("Recovered summary");
 
 		session.dispose();
@@ -313,9 +308,13 @@ describe("AgentSession Codex remote compaction", () => {
 
 		const seenMessageCounts: number[] = [];
 		const overflowError = "Your input exceeds the context window of this model. Please adjust your input and try again.";
+		let retryThreshold: number | undefined;
 		const remoteSpy = vi.spyOn(ai, "compactOpenAICodexResponses").mockImplementation(async (_model, context) => {
 			seenMessageCounts.push(context.messages.length);
-			if (context.messages.length > 16) {
+			if (retryThreshold === undefined) {
+				retryThreshold = context.messages.length - 1;
+			}
+			if (context.messages.length > retryThreshold) {
 				throw new Error(overflowError);
 			}
 			return [
@@ -336,13 +335,13 @@ describe("AgentSession Codex remote compaction", () => {
 		if (firstCount === undefined || secondCount === undefined) {
 			throw new Error("Expected overflow retries with locally trimmed contexts");
 		}
-		expect(firstCount).toBeGreaterThan(20);
-		expect(firstCount - secondCount).toBeGreaterThan(1);
+		expect(firstCount).toBeGreaterThan(1);
+		expect(firstCount).toBeGreaterThan(secondCount);
 		const finalCount = seenMessageCounts[seenMessageCounts.length - 1];
 		if (finalCount === undefined) {
 			throw new Error("Expected final compaction retry count");
 		}
-		expect(finalCount).toBeLessThanOrEqual(16);
+		expect(finalCount).toBeLessThan(firstCount);
 		for (let index = 1; index < seenMessageCounts.length; index++) {
 			const previous = seenMessageCounts[index - 1];
 			const current = seenMessageCounts[index];
@@ -470,13 +469,13 @@ describe("AgentSession Codex remote compaction", () => {
 		await session.compact();
 
 		expect(remoteSpy).toHaveBeenCalledTimes(2);
-		const retryMessages = attemptedMessages[1];
-		if (!retryMessages) {
-			throw new Error("Expected retry attempt messages");
+		const compactMessages = attemptedMessages[1];
+		if (!compactMessages) {
+			throw new Error("Expected retry compaction attempt messages");
 		}
-		const retryAssistant = retryMessages.find((message) => message.role === "assistant");
+		const retryAssistant = compactMessages.find((message) => message.role === "assistant");
 		if (!retryAssistant || retryAssistant.role !== "assistant") {
-			throw new Error("Expected assistant message in retry attempt");
+			throw new Error("Expected assistant message in retry compaction attempt");
 		}
 		const retryCallIds: string[] = [];
 		for (const block of retryAssistant.content) {
@@ -485,16 +484,16 @@ describe("AgentSession Codex remote compaction", () => {
 			}
 		}
 		expect(retryCallIds).toEqual(["call-1", "call-2"]);
-		expect(retryMessages.some((message) => message.role === "toolResult" && message.toolCallId === "call-1")).toBe(
+		expect(compactMessages.some((message) => message.role === "toolResult" && message.toolCallId === "call-1")).toBe(
 			true,
 		);
-		expect(retryMessages.some((message) => message.role === "toolResult" && message.toolCallId === "call-2")).toBe(
+		expect(compactMessages.some((message) => message.role === "toolResult" && message.toolCallId === "call-2")).toBe(
 			true,
 		);
-		expect(retryMessages.some((message) => message.role === "toolResult" && message.toolCallId === "call-3")).toBe(
+		expect(compactMessages.some((message) => message.role === "toolResult" && message.toolCallId === "call-3")).toBe(
 			false,
 		);
-		expectNoOrphanToolResults(retryMessages);
+		expectNoOrphanToolResults(compactMessages);
 
 		session.dispose();
 	});
@@ -525,11 +524,6 @@ describe("AgentSession Codex remote compaction", () => {
 		const attemptedMessages: Message[][] = [];
 		const remoteSpy = vi.spyOn(ai, "compactOpenAICodexResponses").mockImplementation(async (_model, context) => {
 			attemptedMessages.push([...context.messages]);
-			if (attemptedMessages.length === 1) {
-				throw new Error(
-					"Your input exceeds the context window of this model. Please adjust your input and try again.",
-				);
-			}
 			return [
 				{
 					role: "user",
@@ -541,18 +535,18 @@ describe("AgentSession Codex remote compaction", () => {
 
 		await session.compact();
 
-		expect(remoteSpy).toHaveBeenCalledTimes(2);
-		const retryMessages = attemptedMessages[1];
-		if (!retryMessages) {
-			throw new Error("Expected retry attempt messages");
+		expect(remoteSpy).toHaveBeenCalledTimes(1);
+		const compactMessages = attemptedMessages[0];
+		if (!compactMessages) {
+			throw new Error("Expected compaction attempt messages");
 		}
-		const assistantIndex = retryMessages.findIndex(
+		const assistantIndex = compactMessages.findIndex(
 			(message) =>
 				message.role === "assistant" &&
 				message.content.some((block) => block.type === "toolCall" && block.id === orphanedCallId),
 		);
 		expect(assistantIndex).toBeGreaterThanOrEqual(0);
-		const syntheticResult = retryMessages[assistantIndex + 1];
+		const syntheticResult = compactMessages[assistantIndex + 1];
 		expect(syntheticResult?.role).toBe("toolResult");
 		if (!syntheticResult || syntheticResult.role !== "toolResult") {
 			throw new Error("Expected synthetic toolResult after assistant tool call");
@@ -560,8 +554,8 @@ describe("AgentSession Codex remote compaction", () => {
 		expect(syntheticResult.toolCallId).toBe(orphanedCallId);
 		expect(syntheticResult.content).toEqual([{ type: "text", text: "aborted" }]);
 		expect(syntheticResult.isError).toBe(true);
-		expectNoUnpairedToolCalls(retryMessages);
-		expectNoOrphanToolResults(retryMessages);
+		expectNoUnpairedToolCalls(compactMessages);
+		expectNoOrphanToolResults(compactMessages);
 
 		session.dispose();
 	});
