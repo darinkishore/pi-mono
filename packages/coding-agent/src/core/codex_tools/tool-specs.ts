@@ -899,7 +899,12 @@ export function resolveShellToolKindFromModelSlug(model: string): ShellToolKind 
 	return "shell_command";
 }
 
-export const GPT_5_3_CODEX_FAMILY_MODELS = ["gpt-5.3-codex", "gpt-5.3-codex-spark"] as const;
+export const GPT_5_3_CODEX_FAMILY_MODELS = [
+	"gpt-5.3-codex",
+	"gpt-5.3-codex-spark",
+	"gpt-5.4-codex",
+	"gpt-5.4-codex-spark",
+] as const;
 export const GPT_5_2_MODELS = ["gpt-5.2"] as const;
 
 function buildGpt5CodexStyleToolset(platform: "windows" | "posix"): CodexToolSpec[] {

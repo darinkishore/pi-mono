@@ -259,6 +259,23 @@ describe("AgentSession compaction semantics", () => {
 		session.dispose();
 	});
 
+	it("falls back to a 90% threshold when reserve tokens exceed non-codex context window", () => {
+		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+
+		const anthropicModel = getModel("anthropic", "claude-sonnet-4-5")!;
+		const session = createSession(anthropicModel, tempDir, "anthropic-key");
+
+		const limit = (
+			session as unknown as {
+				_getAutoCompactLimit: (contextWindow: number, settings: { reserveTokens: number }) => number;
+			}
+		)._getAutoCompactLimit(8_192, { reserveTokens: 16_384 });
+
+		expect(limit).toBe(Math.floor(8_192 * 0.9));
+		session.dispose();
+	});
+
 	it("still runs overflow compaction for Codex when global auto-compaction is disabled", async () => {
 		tempDir = join(tmpdir(), `pi-compaction-semantics-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
