@@ -100,6 +100,8 @@ interface CompactRequestBody {
 	input: ResponseInput;
 }
 
+const APPROX_BYTES_PER_TOKEN = 4;
+
 // ============================================================================
 // Retry Helpers
 // ============================================================================
@@ -383,6 +385,24 @@ export async function compactOpenAICodexResponses(
 	}
 
 	return convertResponsesInputToMessages(model, body.output);
+}
+
+/**
+ * Estimate compact payload tokens from the exact transformed payload shape.
+ * Uses the same convertResponsesMessages transformation that compact requests send.
+ */
+export function estimateOpenAICodexCompactPayloadTokens(
+	model: Model<"openai-codex-responses">,
+	context: Context,
+): number {
+	const transformedInput = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+		includeSystemPrompt: false,
+	});
+	const inputText = JSON.stringify(transformedInput);
+	const instructionsText = context.systemPrompt ?? "";
+	const inputTokens = Math.ceil(inputText.length / APPROX_BYTES_PER_TOKEN);
+	const instructionsTokens = Math.ceil(instructionsText.length / APPROX_BYTES_PER_TOKEN);
+	return inputTokens + instructionsTokens;
 }
 
 // ============================================================================

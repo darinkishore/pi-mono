@@ -33,6 +33,7 @@ import type {
 } from "@mariozechner/pi-ai";
 import {
 	compactOpenAICodexResponses,
+	estimateOpenAICodexCompactPayloadTokens,
 	isContextOverflow,
 	modelsAreEqual,
 	resetApiProviders,
@@ -223,7 +224,6 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 const CODEX_REMOTE_COMPACTION_SUMMARY_PREFIX = "Another language model started to solve this problem";
-const CODEX_REMOTE_COMPACTION_MIN_MESSAGES = 1;
 
 // ============================================================================
 // AgentSession Class
@@ -1979,7 +1979,12 @@ export class AgentSession {
 		}
 
 		const codexModel = this.model as Model<"openai-codex-responses">;
-		let compactMessages = convertToLlm(sourceMessages ?? this.agent.state.messages);
+		const settings = this.settingsManager.getCompactionSettings();
+		const compactLimit = this._getAutoCompactLimit(codexModel.contextWindow ?? 0, settings);
+		let compactMessages = this._prepareCodexRemoteCompactionMessages(
+			convertToLlm(sourceMessages ?? this.agent.state.messages),
+			compactLimit,
+		);
 		let replacementMessages: Message[] | undefined;
 
 		while (replacementMessages === undefined) {
@@ -1996,9 +2001,11 @@ export class AgentSession {
 					},
 				);
 			} catch (error) {
-				const canRetry = this._isCodexCompactionOverflowError(error, codexModel);
-				const trimmedMessages = this._trimCodexCompactionMessagesForRetry(compactMessages);
-				if (!canRetry || trimmedMessages.length >= compactMessages.length) {
+				if (!this._isCodexCompactionOverflowError(error, codexModel)) {
+					throw error;
+				}
+				const trimmedMessages = this._trimCodexCompactionMessagesToFitLimit(compactMessages, compactLimit, true);
+				if (trimmedMessages.length >= compactMessages.length) {
 					throw error;
 				}
 				compactMessages = trimmedMessages;
@@ -2044,55 +2051,74 @@ export class AgentSession {
 		return isContextOverflow(overflowProbe, model.contextWindow);
 	}
 
-	private _trimCodexCompactionMessages(messages: Message[]): Message[] {
-		if (messages.length <= CODEX_REMOTE_COMPACTION_MIN_MESSAGES) {
-			return messages;
+	private _prepareCodexRemoteCompactionMessages(messages: Message[], compactLimit: number): Message[] {
+		return this._trimCodexCompactionMessagesToFitLimit(messages, compactLimit);
+	}
+
+	private _estimateFullPayloadTokensForCodexCompaction(messages: Message[]): number {
+		const usageEstimate = estimateContextTokens(messages as AgentMessage[]);
+		const currentPayloadEstimate =
+			this.model && this.model.provider === "openai-codex"
+				? estimateOpenAICodexCompactPayloadTokens(this.model as Model<"openai-codex-responses">, {
+						systemPrompt: this.agent.state.systemPrompt,
+						messages,
+						tools: [],
+					})
+				: 0;
+		// Use real API usage when available, but never below the current transformed payload estimate.
+		if (usageEstimate.usageTokens > 0) {
+			return Math.max(usageEstimate.tokens, currentPayloadEstimate);
 		}
+		// No usage-backed estimate exists in this slice; rely on local transformed payload estimate.
+		return Math.max(currentPayloadEstimate, this._estimateContextTokensForThreshold(messages as AgentMessage[]));
+	}
+
+	private _trimCodexCompactionMessagesToFitLimit(
+		messages: Message[],
+		compactLimit: number,
+		forceTrim = false,
+	): Message[] {
+		let trimmedMessages = messages;
+		let shouldForceTrim = forceTrim;
+		while (trimmedMessages.length > 0) {
+			trimmedMessages = this._normalizeCodexCompactionMessages(trimmedMessages);
+			const estimatedFullPayloadTokens = this._estimateFullPayloadTokensForCodexCompaction(trimmedMessages);
+			if (!shouldForceTrim && estimatedFullPayloadTokens <= compactLimit) {
+				break;
+			}
+			const nextTrimmedMessages = this._removeLastCodexGeneratedCompactionMessage(trimmedMessages);
+			if (nextTrimmedMessages.length >= trimmedMessages.length) {
+				break;
+			}
+			trimmedMessages = nextTrimmedMessages;
+			shouldForceTrim = false;
+		}
+		return trimmedMessages;
+	}
+
+	private _removeLastCodexGeneratedCompactionMessage(messages: Message[]): Message[] {
 		const trimmedMessages = [...messages];
 		const tailMessage = trimmedMessages[trimmedMessages.length - 1];
 		if (!tailMessage) {
 			return messages;
 		}
-		if (tailMessage.role !== "assistant" && tailMessage.role !== "toolResult") {
-			return messages;
+		if (tailMessage.role === "toolResult") {
+			trimmedMessages.pop();
+			this._removeAssistantToolCallByIdForCompaction(trimmedMessages, tailMessage.toolCallId);
+			return trimmedMessages;
 		}
-		const removedMessage = trimmedMessages.pop();
-		if (!removedMessage) {
-			return messages;
+		if (tailMessage.role === "assistant") {
+			trimmedMessages.pop();
+			this._removeToolResultsByCallIdsForCompaction(
+				trimmedMessages,
+				this._collectAssistantToolCallIdsForCompaction(tailMessage),
+			);
+			return trimmedMessages;
 		}
-		if (removedMessage.role === "toolResult") {
-			this._removeAssistantToolCallById(trimmedMessages, removedMessage.toolCallId);
-		} else if (removedMessage.role === "assistant") {
-			this._removeToolResultsByCallIds(trimmedMessages, this._collectAssistantToolCallIds(removedMessage));
-		}
-		const withoutOrphans = this._removeOrphanCodexToolResults(trimmedMessages);
-		return this._ensureCodexToolCallResults(withoutOrphans);
+		return messages;
 	}
 
-	private _trimCodexCompactionMessagesForRetry(messages: Message[]): Message[] {
-		const settings = this.settingsManager.getCompactionSettings();
-		const contextWindow = this.model?.contextWindow ?? 0;
-		const compactLimit = this._getAutoCompactLimit(contextWindow, settings);
-		let trimmedMessages = messages;
-		let estimatedTokens = this._estimateContextTokensForThreshold(trimmedMessages as AgentMessage[]);
-		let hasTrimmed = false;
-		while (trimmedMessages.length > CODEX_REMOTE_COMPACTION_MIN_MESSAGES) {
-			if (hasTrimmed && estimatedTokens <= compactLimit) {
-				break;
-			}
-			const nextTrimmedMessages = this._trimCodexCompactionMessages(trimmedMessages);
-			if (nextTrimmedMessages.length >= trimmedMessages.length) {
-				break;
-			}
-			trimmedMessages = nextTrimmedMessages;
-			hasTrimmed = true;
-			estimatedTokens = this._estimateContextTokensForThreshold(trimmedMessages as AgentMessage[]);
-		}
-
-		return trimmedMessages;
-	}
-
-	private _collectAssistantToolCallIds(message: AssistantMessage): Set<string> {
+	private _collectAssistantToolCallIdsForCompaction(message: AssistantMessage): Set<string> {
 		const toolCallIds = new Set<string>();
 		for (const block of message.content) {
 			if (block.type === "toolCall") {
@@ -2102,7 +2128,7 @@ export class AgentSession {
 		return toolCallIds;
 	}
 
-	private _removeAssistantToolCallById(messages: Message[], toolCallId: string): void {
+	private _removeAssistantToolCallByIdForCompaction(messages: Message[], toolCallId: string): void {
 		for (let index = messages.length - 1; index >= 0; index--) {
 			const message = messages[index];
 			if (!message || message.role !== "assistant") {
@@ -2124,7 +2150,7 @@ export class AgentSession {
 		}
 	}
 
-	private _removeToolResultsByCallIds(messages: Message[], toolCallIds: Set<string>): void {
+	private _removeToolResultsByCallIdsForCompaction(messages: Message[], toolCallIds: Set<string>): void {
 		if (toolCallIds.size === 0) {
 			return;
 		}
@@ -2136,24 +2162,7 @@ export class AgentSession {
 		}
 	}
 
-	private _removeOrphanCodexToolResults(messages: Message[]): Message[] {
-		const assistantToolCallIds = new Set<string>();
-		for (const message of messages) {
-			if (message.role !== "assistant") {
-				continue;
-			}
-			for (const block of message.content) {
-				if (block.type === "toolCall") {
-					assistantToolCallIds.add(block.id);
-				}
-			}
-		}
-		return messages.filter(
-			(message) => message.role !== "toolResult" || assistantToolCallIds.has(message.toolCallId),
-		);
-	}
-
-	private _ensureCodexToolCallResults(messages: Message[]): Message[] {
+	private _normalizeCodexCompactionMessages(messages: Message[]): Message[] {
 		const toolResultIds = new Set<string>();
 		for (const message of messages) {
 			if (message.role === "toolResult") {
@@ -2161,9 +2170,9 @@ export class AgentSession {
 			}
 		}
 
-		const normalizedMessages: Message[] = [];
+		const withEnsuredResults: Message[] = [];
 		for (const message of messages) {
-			normalizedMessages.push(message);
+			withEnsuredResults.push(message);
 			if (message.role !== "assistant") {
 				continue;
 			}
@@ -2171,7 +2180,7 @@ export class AgentSession {
 				if (block.type !== "toolCall" || toolResultIds.has(block.id)) {
 					continue;
 				}
-				normalizedMessages.push({
+				withEnsuredResults.push({
 					role: "toolResult",
 					toolCallId: block.id,
 					toolName: block.name,
@@ -2182,7 +2191,22 @@ export class AgentSession {
 				toolResultIds.add(block.id);
 			}
 		}
-		return normalizedMessages;
+
+		const assistantToolCallIds = new Set<string>();
+		for (const message of withEnsuredResults) {
+			if (message.role !== "assistant") {
+				continue;
+			}
+			for (const block of message.content) {
+				if (block.type === "toolCall") {
+					assistantToolCallIds.add(block.id);
+				}
+			}
+		}
+
+		return withEnsuredResults.filter(
+			(message) => message.role !== "toolResult" || assistantToolCallIds.has(message.toolCallId),
+		);
 	}
 
 	private _estimateContextTokensForThreshold(messages: AgentMessage[]): number {
