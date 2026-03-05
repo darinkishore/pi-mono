@@ -2236,15 +2236,19 @@ export class AgentSession {
 			return Number.POSITIVE_INFINITY;
 		}
 
-		const reserveLimit = Math.max(1, contextWindow - settings.reserveTokens);
-
 		// Codex parity: OpenAI Codex models compact at 90% of model context.
 		// This mirrors codex-rs ModelInfo::auto_compact_token_limit() semantics.
 		if (this.model?.provider === "openai-codex") {
 			return Math.max(1, Math.floor(contextWindow * 0.9));
 		}
 
-		return reserveLimit;
+		// Avoid pathological always-compact behavior when reserve tokens exceed
+		// the model context window (common in tests and small-window models).
+		if (settings.reserveTokens >= contextWindow) {
+			return Math.max(1, Math.floor(contextWindow * 0.9));
+		}
+
+		return Math.max(1, contextWindow - settings.reserveTokens);
 	}
 
 	private async _performCompaction(

@@ -20,12 +20,25 @@ const ADAPTER_BACKED_TOOL_NAMES = new Set<string>([
 	"close_agent",
 ]);
 
+function normalizeModelId(modelId: string): string {
+	const normalized = modelId.toLowerCase();
+	const slashIndex = normalized.lastIndexOf("/");
+	if (slashIndex === -1) {
+		return normalized;
+	}
+	return normalized.slice(slashIndex + 1);
+}
+
 function isGpt52Model(modelId: string): boolean {
-	return modelId.toLowerCase() === "gpt-5.2";
+	return normalizeModelId(modelId) === "gpt-5.2";
 }
 
 function isGpt53CodexFamilyModel(modelId: string): boolean {
-	return /^gpt-5\.3-codex/.test(modelId.toLowerCase());
+	return /^gpt-5\.(?:3|4)(?:\.\d+)?-codex/.test(normalizeModelId(modelId));
+}
+
+function isGpt54Model(modelId: string): boolean {
+	return normalizeModelId(modelId) === "gpt-5.4";
 }
 
 function getToolName(spec: CodexToolSpec): string | undefined {
@@ -53,12 +66,21 @@ function filterSupportedToolNames(toolNames: string[], availableBaseToolNames: I
 
 export function isCodexPresetModel(model: Model<any> | undefined): boolean {
 	if (!model) return false;
-	if (model.provider !== "openai-codex") return false;
-	return isGpt52Model(model.id) || isGpt53CodexFamilyModel(model.id);
+	if (model.provider === "openai-codex") {
+		return isGpt52Model(model.id) || isGpt53CodexFamilyModel(model.id);
+	}
+	if (model.provider === "openai") {
+		return isGpt54Model(model.id);
+	}
+	return false;
 }
 
 export function getCodexPresetSpecsForModel(model: Model<any> | undefined): CodexToolSpec[] | undefined {
 	if (!model) return undefined;
+
+	if (model.provider === "openai" && isGpt54Model(model.id)) {
+		return buildGpt53CodexFamilyToolset();
+	}
 	if (model.provider !== "openai-codex") return undefined;
 
 	if (isGpt52Model(model.id)) {
