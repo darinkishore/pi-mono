@@ -36,6 +36,7 @@ export interface SessionHeader {
 }
 
 export interface NewSessionOptions {
+	id?: string;
 	parentSession?: string;
 }
 
@@ -738,7 +739,7 @@ export class SessionManager {
 	}
 
 	newSession(options?: NewSessionOptions): string | undefined {
-		this.sessionId = randomUUID();
+		this.sessionId = options?.id ?? randomUUID();
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
 			type: "session",
@@ -1204,11 +1205,7 @@ export class SessionManager {
 		}
 
 		if (this.persist) {
-			appendFileSync(newSessionFile, `${JSON.stringify(header)}\n`);
-			for (const entry of pathWithoutLabels) {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
-			}
-			// Write fresh label entries at the end
+			// Build label entries
 			const lastEntryId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id || null;
 			let parentId = lastEntryId;
 			const labelEntries: LabelEntry[] = [];
@@ -1221,16 +1218,29 @@ export class SessionManager {
 					targetId,
 					label,
 				};
-				appendFileSync(newSessionFile, `${JSON.stringify(labelEntry)}\n`);
 				pathEntryIds.add(labelEntry.id);
 				labelEntries.push(labelEntry);
 				parentId = labelEntry.id;
 			}
+
 			this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
 			this.sessionId = newSessionId;
 			this.sessionFile = newSessionFile;
-			this.flushed = true;
 			this._buildIndex();
+
+			// Only write the file now if it contains an assistant message.
+			// Otherwise defer to _persist(), which creates the file on the
+			// first assistant response, matching the newSession() contract
+			// and avoiding the duplicate-header bug when _persist()'s
+			// no-assistant guard later resets flushed to false.
+			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
+			if (hasAssistant) {
+				this._rewriteFile();
+				this.flushed = true;
+			} else {
+				this.flushed = false;
+			}
+
 			return newSessionFile;
 		}
 

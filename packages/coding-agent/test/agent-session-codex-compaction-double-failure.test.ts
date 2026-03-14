@@ -77,7 +77,7 @@ function createSession(model: Model<any>, tempDir: string, providerApiKey = "tes
 			reserveTokens: 16_384,
 		},
 	});
-	const authStorage = new AuthStorage(join(tempDir, "auth.json"));
+	const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 	authStorage.setRuntimeApiKey(model.provider, providerApiKey);
 	const modelRegistry = new ModelRegistry(authStorage, tempDir);
 

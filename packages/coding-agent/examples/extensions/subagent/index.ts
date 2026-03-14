@@ -61,11 +61,9 @@ function formatUsageStats(
 	return parts.join(" ");
 }
 
-function formatToolCall(
-	toolName: string,
-	args: Record<string, unknown>,
-	themeFg: (color: any, text: string) => string,
-): string {
+function formatToolCall(toolName: string, args: unknown, themeFg: (color: any, text: string) => string): string {
+	const normalizedArgs =
+		typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 	const shortenPath = (p: string) => {
 		const home = os.homedir();
 		return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
@@ -73,15 +71,15 @@ function formatToolCall(
 
 	switch (toolName) {
 		case "bash": {
-			const command = (args.command as string) || "...";
+			const command = (normalizedArgs.command as string) || "...";
 			const preview = command.length > 60 ? `${command.slice(0, 60)}...` : command;
 			return themeFg("muted", "$ ") + themeFg("toolOutput", preview);
 		}
 		case "read": {
-			const rawPath = (args.file_path || args.path || "...") as string;
+			const rawPath = (normalizedArgs.file_path || normalizedArgs.path || "...") as string;
 			const filePath = shortenPath(rawPath);
-			const offset = args.offset as number | undefined;
-			const limit = args.limit as number | undefined;
+			const offset = normalizedArgs.offset as number | undefined;
+			const limit = normalizedArgs.limit as number | undefined;
 			let text = themeFg("accent", filePath);
 			if (offset !== undefined || limit !== undefined) {
 				const startLine = offset ?? 1;
@@ -91,30 +89,30 @@ function formatToolCall(
 			return themeFg("muted", "read ") + text;
 		}
 		case "write": {
-			const rawPath = (args.file_path || args.path || "...") as string;
+			const rawPath = (normalizedArgs.file_path || normalizedArgs.path || "...") as string;
 			const filePath = shortenPath(rawPath);
-			const content = (args.content || "") as string;
+			const content = (normalizedArgs.content || "") as string;
 			const lines = content.split("\n").length;
 			let text = themeFg("muted", "write ") + themeFg("accent", filePath);
 			if (lines > 1) text += themeFg("dim", ` (${lines} lines)`);
 			return text;
 		}
 		case "edit": {
-			const rawPath = (args.file_path || args.path || "...") as string;
+			const rawPath = (normalizedArgs.file_path || normalizedArgs.path || "...") as string;
 			return themeFg("muted", "edit ") + themeFg("accent", shortenPath(rawPath));
 		}
 		case "ls": {
-			const rawPath = (args.path || ".") as string;
+			const rawPath = (normalizedArgs.path || ".") as string;
 			return themeFg("muted", "ls ") + themeFg("accent", shortenPath(rawPath));
 		}
 		case "find": {
-			const pattern = (args.pattern || "*") as string;
-			const rawPath = (args.path || ".") as string;
+			const pattern = (normalizedArgs.pattern || "*") as string;
+			const rawPath = (normalizedArgs.path || ".") as string;
 			return themeFg("muted", "find ") + themeFg("accent", pattern) + themeFg("dim", ` in ${shortenPath(rawPath)}`);
 		}
 		case "grep": {
-			const pattern = (args.pattern || "") as string;
-			const rawPath = (args.path || ".") as string;
+			const pattern = (normalizedArgs.pattern || "") as string;
+			const rawPath = (normalizedArgs.path || ".") as string;
 			return (
 				themeFg("muted", "grep ") +
 				themeFg("accent", `/${pattern}/`) +
@@ -172,7 +170,7 @@ function getFinalOutput(messages: Message[]): string {
 	return "";
 }
 
-type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
+type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: unknown };
 
 function getDisplayItems(messages: Message[]): DisplayItem[] {
 	const items: DisplayItem[] = [];

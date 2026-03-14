@@ -152,7 +152,7 @@ export interface AgentSessionConfig {
 	settingsManager: SettingsManager;
 	cwd: string;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
-	scopedModels?: Array<{ model: Model<any>; thinkingLevel: ThinkingLevel }>;
+	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	/** Resource loader for skills, prompts, themes, context files, system prompt */
 	resourceLoader: ResourceLoader;
 	/** SDK custom tools registered outside extensions */
@@ -234,7 +234,7 @@ export class AgentSession {
 	readonly sessionManager: SessionManager;
 	readonly settingsManager: SettingsManager;
 
-	private _scopedModels: Array<{ model: Model<any>; thinkingLevel: ThinkingLevel }>;
+	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
@@ -287,6 +287,8 @@ export class AgentSession {
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
+	private _toolPromptSnippets: Map<string, string> = new Map();
+	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -480,7 +482,7 @@ export class AgentSession {
 	private _handleBeforeSampling = async (
 		context: { messages: AgentMessage[] },
 		signal?: AbortSignal,
-	): Promise<AgentMessage[] | void> => {
+	): Promise<AgentMessage[] | undefined> => {
 		if (signal?.aborted) return;
 		if (!this._shouldUseCodexRemoteCompaction()) return;
 		if (this._shouldUseNativeCompaction()) return;
@@ -797,12 +799,12 @@ export class AgentSession {
 	}
 
 	/** Scoped models for cycling (from --models flag) */
-	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel: ThinkingLevel }> {
+	get scopedModels(): ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
 		return this._scopedModels;
 	}
 
 	/** Update scoped models for cycling */
-	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel: ThinkingLevel }>): void {
+	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>): void {
 		this._scopedModels = scopedModels;
 	}
 
@@ -811,8 +813,44 @@ export class AgentSession {
 		return this._resourceLoader.getPrompts().prompts;
 	}
 
+	private _normalizePromptSnippet(text: string | undefined): string | undefined {
+		if (!text) return undefined;
+		const oneLine = text
+			.replace(/[\r\n]+/g, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+		return oneLine.length > 0 ? oneLine : undefined;
+	}
+
+	private _normalizePromptGuidelines(guidelines: string[] | undefined): string[] {
+		if (!guidelines || guidelines.length === 0) {
+			return [];
+		}
+
+		const unique = new Set<string>();
+		for (const guideline of guidelines) {
+			const normalized = guideline.trim();
+			if (normalized.length > 0) {
+				unique.add(normalized);
+			}
+		}
+		return Array.from(unique);
+	}
+
 	private _rebuildSystemPrompt(toolNames: string[]): string {
-		const validToolNames = toolNames.filter((name) => this._baseToolRegistry.has(name));
+		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
+		const toolSnippets: Record<string, string> = {};
+		const promptGuidelines: string[] = [];
+		for (const name of validToolNames) {
+			const snippet = this._toolPromptSnippets.get(name);
+			if (snippet) {
+				toolSnippets[name] = snippet;
+			}
+			const toolGuidelines = this._toolPromptGuidelines.get(name);
+			if (toolGuidelines) {
+				promptGuidelines.push(...toolGuidelines);
+			}
+		}
 		const loaderSystemPrompt = this._resourceLoader.getSystemPrompt();
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
@@ -827,6 +865,8 @@ export class AgentSession {
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
+			toolSnippets,
+			promptGuidelines,
 		});
 	}
 
@@ -1379,12 +1419,13 @@ export class AgentSession {
 		}
 
 		const previousModel = this.model;
+		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.setModel(model);
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 
 		// Re-clamp thinking level for new model's capabilities
-		this.setThinkingLevel(this.thinkingLevel);
+		this.setThinkingLevel(thinkingLevel);
 		this._applyModelToolsetDefaults();
 		this._syncNativeCompaction();
 
@@ -1404,9 +1445,9 @@ export class AgentSession {
 		return this._cycleAvailableModel(direction);
 	}
 
-	private async _getScopedModelsWithApiKey(): Promise<Array<{ model: Model<any>; thinkingLevel: ThinkingLevel }>> {
+	private async _getScopedModelsWithApiKey(): Promise<Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>> {
 		const apiKeysByProvider = new Map<string, string | undefined>();
-		const result: Array<{ model: Model<any>; thinkingLevel: ThinkingLevel }> = [];
+		const result: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> = [];
 
 		for (const scoped of this._scopedModels) {
 			const provider = scoped.model.provider;
@@ -1437,6 +1478,7 @@ export class AgentSession {
 		const len = scopedModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
+		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
 
 		// Apply model
 		this.agent.setModel(next.model);
@@ -1444,7 +1486,7 @@ export class AgentSession {
 		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
 		// Apply thinking level (setThinkingLevel clamps to model capabilities)
-		this.setThinkingLevel(next.thinkingLevel);
+		this.setThinkingLevel(thinkingLevel);
 		this._applyModelToolsetDefaults();
 		this._syncNativeCompaction();
 
@@ -1470,13 +1512,15 @@ export class AgentSession {
 			throw new Error(`No API key for ${nextModel.provider}/${nextModel.id}`);
 		}
 
+		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.setModel(nextModel);
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Re-clamp thinking level for new model's capabilities
-		this.setThinkingLevel(this.thinkingLevel);
+		this.setThinkingLevel(thinkingLevel);
 		this._applyModelToolsetDefaults();
+		this._syncNativeCompaction();
 
 		await this._emitModelSelect(nextModel, currentModel, "cycle");
 
@@ -1544,6 +1588,16 @@ export class AgentSession {
 	 */
 	supportsThinking(): boolean {
 		return !!this.model?.reasoning;
+	}
+
+	private _getThinkingLevelForModelSwitch(explicitLevel?: ThinkingLevel): ThinkingLevel {
+		if (explicitLevel !== undefined) {
+			return explicitLevel;
+		}
+		if (!this.supportsThinking()) {
+			return this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+		}
+		return this.thinkingLevel;
 	}
 
 	private _clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel {
@@ -1942,19 +1996,19 @@ export class AgentSession {
 			throw new Error("No model selected");
 		}
 
-		if (this._shouldUseCodexRemoteCompaction()) {
-			try {
-				return await this._runCodexRemoteCompaction(preparation, apiKey, signal, sourceMessages);
-			} catch (error) {
-				const errorMessage = error instanceof Error ? error.message : String(error);
-				if (this._isCompactionAbortLikeError(error, errorMessage, signal)) {
-					throw error;
-				}
-				throw new Error(`Codex remote compaction failed: ${errorMessage}`, { cause: error });
-			}
+		if (!this._shouldUseCodexRemoteCompaction()) {
+			return await compact(preparation, this.model, apiKey, customInstructions, signal);
 		}
 
-		return await compact(preparation, this.model, apiKey, customInstructions, signal);
+		try {
+			return await this._runCodexRemoteCompaction(preparation, apiKey, signal, sourceMessages);
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			if (this._isCompactionAbortLikeError(error, errorMessage, signal)) {
+				throw error;
+			}
+			throw new Error(`Codex remote compaction failed: ${errorMessage}`, { cause: error });
+		}
 	}
 
 	private _isCompactionAbortLikeError(error: unknown, errorMessage: string, signal?: AbortSignal): boolean {
@@ -2605,6 +2659,7 @@ export class AgentSession {
 				getActiveTools: () => this.getActiveToolNames(),
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
+				refreshTools: () => this._refreshToolRegistry(),
 				getCommands,
 				setModel: async (model) => {
 					const key = await this.modelRegistry.getApiKey(model);
@@ -2645,6 +2700,83 @@ export class AgentSession {
 			return toolNames;
 		}
 		return toolNames.filter((name) => name !== "apply_patch");
+	}
+
+	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
+		const previousRegistryNames = new Set(this._toolRegistry.keys());
+		const previousActiveToolNames = this.getActiveToolNames();
+
+		const registeredTools = this._extensionRunner?.getAllRegisteredTools() ?? [];
+		const allCustomTools = [
+			...registeredTools,
+			...this._customTools.map((def) => ({ definition: def, extensionPath: "<sdk>" })),
+		];
+		this._toolPromptSnippets = new Map(
+			allCustomTools
+				.map((registeredTool) => {
+					const snippet = this._normalizePromptSnippet(
+						registeredTool.definition.promptSnippet ?? registeredTool.definition.description,
+					);
+					return snippet ? ([registeredTool.definition.name, snippet] as const) : undefined;
+				})
+				.filter((entry): entry is readonly [string, string] => entry !== undefined),
+		);
+		this._toolPromptGuidelines = new Map(
+			allCustomTools
+				.map((registeredTool) => {
+					const guidelines = this._normalizePromptGuidelines(registeredTool.definition.promptGuidelines);
+					return guidelines.length > 0 ? ([registeredTool.definition.name, guidelines] as const) : undefined;
+				})
+				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
+		);
+		const wrappedExtensionTools = this._extensionRunner
+			? wrapRegisteredTools(allCustomTools, this._extensionRunner)
+			: [];
+
+		const toolRegistry = new Map(this._baseToolRegistry);
+		for (const tool of wrappedExtensionTools as AgentTool[]) {
+			toolRegistry.set(tool.name, tool);
+		}
+
+		const nextActiveToolNames = options?.activeToolNames
+			? [...this._filterRequestedActiveToolNamesForModel(options.activeToolNames)]
+			: previousActiveToolNames.length > 0
+				? [...previousActiveToolNames]
+				: getDefaultBaseToolNamesForModel(this.model, this._baseToolRegistry.keys());
+		if (options?.includeAllExtensionTools) {
+			for (const tool of wrappedExtensionTools) {
+				nextActiveToolNames.push(tool.name);
+			}
+		} else if (!options?.activeToolNames) {
+			for (const toolName of toolRegistry.keys()) {
+				if (!previousRegistryNames.has(toolName)) {
+					nextActiveToolNames.push(toolName);
+				}
+			}
+		}
+
+		const activeToolNameSet = new Set(nextActiveToolNames);
+		const extensionToolNames = new Set(wrappedExtensionTools.map((tool) => tool.name));
+		const activeBaseTools = Array.from(activeToolNameSet)
+			.filter((name) => this._baseToolRegistry.has(name) && !extensionToolNames.has(name))
+			.map((name) => this._baseToolRegistry.get(name) as AgentTool);
+		const activeExtensionTools = wrappedExtensionTools.filter((tool) => activeToolNameSet.has(tool.name));
+		const activeToolsArray: AgentTool[] = [...activeBaseTools, ...activeExtensionTools];
+
+		if (this._extensionRunner) {
+			const wrappedActiveTools = wrapToolsWithExtensions(activeToolsArray, this._extensionRunner);
+			this.agent.setTools(wrappedActiveTools as AgentTool[]);
+
+			const wrappedAllTools = wrapToolsWithExtensions(Array.from(toolRegistry.values()), this._extensionRunner);
+			this._toolRegistry = new Map(wrappedAllTools.map((tool) => [tool.name, tool]));
+		} else {
+			this.agent.setTools(activeToolsArray);
+			this._toolRegistry = toolRegistry;
+		}
+
+		const systemPromptToolNames = Array.from(activeToolNameSet).filter((name) => this._baseToolRegistry.has(name));
+		this._baseSystemPrompt = this._rebuildSystemPrompt(systemPromptToolNames);
+		this.agent.setSystemPrompt(this._baseSystemPrompt);
 	}
 
 	private _buildRuntime(options: {
@@ -2693,20 +2825,6 @@ export class AgentSession {
 			this._applyExtensionBindings(this._extensionRunner);
 		}
 
-		const registeredTools = this._extensionRunner?.getAllRegisteredTools() ?? [];
-		const allCustomTools = [
-			...registeredTools,
-			...this._customTools.map((def) => ({ definition: def, extensionPath: "<sdk>" })),
-		];
-		const wrappedExtensionTools = this._extensionRunner
-			? wrapRegisteredTools(allCustomTools, this._extensionRunner)
-			: [];
-
-		const toolRegistry = new Map(this._baseToolRegistry);
-		for (const tool of wrappedExtensionTools as AgentTool[]) {
-			toolRegistry.set(tool.name, tool);
-		}
-
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
 			: getDefaultBaseToolNamesForModel(this.model, this._baseToolRegistry.keys());
@@ -2716,34 +2834,10 @@ export class AgentSession {
 			? this._filterRequestedActiveToolNamesForModel(options.activeToolNames)
 			: undefined;
 		const baseActiveToolNames = forcedCodexToolsetNames ?? requestedActiveToolNames ?? defaultActiveToolNames;
-		const activeToolNameSet = new Set<string>(baseActiveToolNames);
-		if (options.includeAllExtensionTools) {
-			for (const tool of wrappedExtensionTools as AgentTool[]) {
-				activeToolNameSet.add(tool.name);
-			}
-		}
-
-		const extensionToolNames = new Set(wrappedExtensionTools.map((tool) => tool.name));
-		const activeBaseTools = Array.from(activeToolNameSet)
-			.filter((name) => this._baseToolRegistry.has(name) && !extensionToolNames.has(name))
-			.map((name) => this._baseToolRegistry.get(name) as AgentTool);
-		const activeExtensionTools = wrappedExtensionTools.filter((tool) => activeToolNameSet.has(tool.name));
-		const activeToolsArray: AgentTool[] = [...activeBaseTools, ...activeExtensionTools];
-
-		if (this._extensionRunner) {
-			const wrappedActiveTools = wrapToolsWithExtensions(activeToolsArray, this._extensionRunner);
-			this.agent.setTools(wrappedActiveTools as AgentTool[]);
-
-			const wrappedAllTools = wrapToolsWithExtensions(Array.from(toolRegistry.values()), this._extensionRunner);
-			this._toolRegistry = new Map(wrappedAllTools.map((tool) => [tool.name, tool]));
-		} else {
-			this.agent.setTools(activeToolsArray);
-			this._toolRegistry = toolRegistry;
-		}
-
-		const systemPromptToolNames = Array.from(activeToolNameSet).filter((name) => this._baseToolRegistry.has(name));
-		this._baseSystemPrompt = this._rebuildSystemPrompt(systemPromptToolNames);
-		this.agent.setSystemPrompt(this._baseSystemPrompt);
+		this._refreshToolRegistry({
+			activeToolNames: baseActiveToolNames,
+			includeAllExtensionTools: options.includeAllExtensionTools,
+		});
 	}
 
 	async reload(): Promise<void> {

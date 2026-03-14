@@ -21,6 +21,8 @@ import type {
 	StreamFn,
 } from "./types.js";
 
+export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
+
 /**
  * Start an agent loop with a new prompt message.
  * The prompt is added to the context and events are emitted for it.
@@ -89,6 +91,35 @@ export function agentLoopContinue(
 	})();
 
 	return stream;
+}
+
+export async function runAgentLoop(
+	prompts: AgentMessage[],
+	context: AgentContext,
+	config: AgentLoopConfig,
+	emit: AgentEventSink,
+	signal?: AbortSignal,
+	streamFn?: StreamFn,
+): Promise<AgentMessage[]> {
+	const stream = agentLoop(prompts, context, config, signal, streamFn);
+	for await (const event of stream) {
+		await emit(event);
+	}
+	return stream.result();
+}
+
+export async function runAgentLoopContinue(
+	context: AgentContext,
+	config: AgentLoopConfig,
+	emit: AgentEventSink,
+	signal?: AbortSignal,
+	streamFn?: StreamFn,
+): Promise<AgentMessage[]> {
+	const stream = agentLoopContinue(context, config, signal, streamFn);
+	for await (const event of stream) {
+		await emit(event);
+	}
+	return stream.result();
 }
 
 function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
