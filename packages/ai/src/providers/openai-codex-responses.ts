@@ -325,11 +325,12 @@ export async function compactOpenAICodexResponses(
 			includeSystemPrompt: false,
 		}),
 	};
-	options?.onPayload?.(payload);
+	const nextPayload = await options?.onPayload?.(payload, model);
+	const requestPayload = (nextPayload ?? payload) as CompactRequestBody;
 
 	const headers = buildHeaders(model.headers, options?.headers, accountId, apiKey);
 	headers.set("accept", "application/json");
-	const bodyJson = JSON.stringify(payload);
+	const bodyJson = JSON.stringify(requestPayload);
 
 	let response: Response | undefined;
 	let lastError: Error | undefined;

@@ -183,9 +183,9 @@ export class FileSettingsStorage implements SettingsStorage {
 		try {
 			// Only create directory and lock if file exists or we need to write
 			const fileExists = existsSync(path);
-				if (fileExists) {
-					release = this.acquireLockSyncWithRetry(path);
-				}
+			if (fileExists) {
+				release = this.acquireLockSyncWithRetry(path);
+			}
 			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
 			const next = fn(current);
 			if (next !== undefined) {
@@ -193,9 +193,9 @@ export class FileSettingsStorage implements SettingsStorage {
 				if (!existsSync(dir)) {
 					mkdirSync(dir, { recursive: true });
 				}
-					if (!release) {
-						release = this.acquireLockSyncWithRetry(path);
-					}
+				if (!release) {
+					release = this.acquireLockSyncWithRetry(path);
+				}
 				writeFileSync(path, next, "utf-8");
 			}
 		} finally {

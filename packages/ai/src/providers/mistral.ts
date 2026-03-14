@@ -33,6 +33,13 @@ import { transformMessages } from "./transform-messages.js";
 const MISTRAL_TOOL_CALL_ID_LENGTH = 9;
 const MAX_MISTRAL_ERROR_BODY_CHARS = 4000;
 
+function toFunctionArgsString(value: unknown): string {
+	if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+		return JSON.stringify(value);
+	}
+	return JSON.stringify({});
+}
+
 /**
  * Provider-specific options for the Mistral API.
  */
@@ -489,11 +496,13 @@ function toChatMessages(messages: Message[], supportsImages: boolean): ChatCompl
 					}
 					continue;
 				}
-				toolCalls.push({
-					id: block.id,
-					type: "function",
-					function: { name: block.name, arguments: JSON.stringify(block.arguments || {}) },
-				});
+				if (block.type === "toolCall") {
+					toolCalls.push({
+						id: block.id,
+						type: "function",
+						function: { name: block.name, arguments: toFunctionArgsString(block.arguments) },
+					});
+				}
 			}
 
 			const assistantMessage: ChatCompletionStreamRequestMessages = { role: "assistant" };

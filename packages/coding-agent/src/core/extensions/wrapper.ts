@@ -32,3 +32,12 @@ export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: Exten
 export function wrapRegisteredTools(registeredTools: RegisteredTool[], runner: ExtensionRunner): AgentTool[] {
 	return registeredTools.map((rt) => wrapRegisteredTool(rt, runner));
 }
+
+/**
+ * Compatibility wrapper for rebased callers that still expect a generic tool wrapper.
+ * Base tools are already extension-aware via agent-core hooks, and extension tools have
+ * already been adapted through `wrapRegisteredTools`.
+ */
+export function wrapToolsWithExtensions(tools: AgentTool[], _runner: ExtensionRunner): AgentTool[] {
+	return tools;
+}

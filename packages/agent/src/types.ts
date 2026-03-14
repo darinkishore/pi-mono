@@ -219,7 +219,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * When a list is returned, the loop replaces `context.messages` with it for
 	 * the upcoming request.
 	 */
-	beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>;
+	beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | undefined>;
 }
 
 /**

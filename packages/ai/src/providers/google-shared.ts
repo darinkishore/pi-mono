@@ -50,6 +50,13 @@ const base64SignaturePattern = /^[A-Za-z0-9+/]+={0,2}$/;
 // See: https://ai.google.dev/gemini-api/docs/thought-signatures
 const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 
+function toFunctionArgs(value: unknown): Record<string, unknown> {
+	if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+		return value as Record<string, unknown>;
+	}
+	return {};
+}
+
 function isValidThoughtSignature(signature: string | undefined): boolean {
 	if (!signature) return false;
 	if (signature.length % 4 !== 0) return false;
@@ -150,13 +157,13 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					const part: Part = {
 						functionCall: {
 							name: block.name,
-							args: block.arguments ?? {},
+							args: toFunctionArgs(block.arguments),
 							...(requiresToolCallId(model.id) ? { id: block.id } : {}),
 						},
 						...(effectiveSignature && { thoughtSignature: effectiveSignature }),
 					};
 					parts.push(part);
-					}
+				}
 			}
 
 			if (parts.length === 0) continue;

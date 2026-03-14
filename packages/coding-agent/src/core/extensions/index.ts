@@ -163,4 +163,4 @@ export {
 	isToolCallEventType,
 	isWriteToolResult,
 } from "./types.js";
-export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.js";
+export { wrapRegisteredTool, wrapRegisteredTools, wrapToolsWithExtensions } from "./wrapper.js";

@@ -442,17 +442,17 @@ export class ToolExecutionComponent extends Container {
 						customRendererHasContent = true;
 					}
 				}
-				} else if (this.result) {
-					// Has result but no custom renderResult
-					const output = this.getTextOutput();
-					if (output) {
-						this.contentBox.addChild(new Text(theme.fg("toolOutput", output), 0, 0));
-						customRendererHasContent = true;
-					}
+			} else if (this.result) {
+				// Has result but no custom renderResult
+				const output = this.getTextOutput();
+				if (output) {
+					this.contentBox.addChild(new Text(theme.fg("toolOutput", output), 0, 0));
+					customRendererHasContent = true;
 				}
 			}
+		}
 
-			// Handle images (same for both custom and built-in)
+		// Handle images (same for both custom and built-in)
 		for (const img of this.imageComponents) {
 			this.removeChild(img);
 		}

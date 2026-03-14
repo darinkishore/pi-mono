@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compactOpenAICodexResponses, streamOpenAICodexResponses } from "../src/providers/openai-codex-responses.js";
 import type { Context, Model } from "../src/types.js";
@@ -338,9 +339,9 @@ describe("openai-codex streaming", () => {
 		await streamResult.result();
 	});
 
-		it("reuses websocket sessions and sends incremental payloads with previous_response_id", async () => {
-			const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
-			process.env.PI_CODING_AGENT_DIR = tempDir;
+	it("reuses websocket sessions and sends incremental payloads with previous_response_id", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
+		process.env.PI_CODING_AGENT_DIR = tempDir;
 
 		const payload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
@@ -486,16 +487,16 @@ describe("openai-codex streaming", () => {
 			previous_response_id?: string;
 			input?: Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }>;
 		};
-			expect(secondPayload.type).toBe("response.create");
-			expect(secondPayload.previous_response_id).toBe("resp_1");
-			expect(secondPayload.input).toHaveLength(1);
-			expect(secondPayload.input?.[0]?.role).toBe("user");
-			expect(secondPayload.input?.[0]?.content?.[0]?.text).toBe("Second request");
-		});
+		expect(secondPayload.type).toBe("response.create");
+		expect(secondPayload.previous_response_id).toBe("resp_1");
+		expect(secondPayload.input).toHaveLength(1);
+		expect(secondPayload.input?.[0]?.role).toBe("user");
+		expect(secondPayload.input?.[0]?.content?.[0]?.text).toBe("Second request");
+	});
 
-		it.each(["gpt-5.3-codex", "gpt-5.4"])("clamps %s minimal reasoning effort to low", async (modelId) => {
-			const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
-			process.env.PI_CODING_AGENT_DIR = tempDir;
+	it.each(["gpt-5.3-codex", "gpt-5.4"])("clamps %s minimal reasoning effort to low", async (modelId) => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
+		process.env.PI_CODING_AGENT_DIR = tempDir;
 
 		const payload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
@@ -898,13 +899,9 @@ describe("openai-codex streaming", () => {
 				{
 					name: "exec_command",
 					description: "Executes a shell command",
-					parameters: {
-						type: "object",
-						properties: {
-							cmd: { type: "string" },
-						},
-						required: ["cmd"],
-					},
+					parameters: Type.Object({
+						cmd: Type.String(),
+					}),
 				},
 			],
 		};

@@ -50,7 +50,7 @@ function createSession(model: Model<any>, tempDir: string, providerApiKey = "tes
 			reserveTokens: 16_384,
 		},
 	});
-	const authStorage = new AuthStorage(join(tempDir, "auth.json"));
+	const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 	authStorage.setRuntimeApiKey(model.provider, providerApiKey);
 	const modelRegistry = new ModelRegistry(authStorage, tempDir);
 
@@ -267,7 +267,8 @@ describe("AgentSession Codex remote compaction", () => {
 		seedLargeAssistantConversation(session, model, 24);
 
 		const seenMessageCounts: number[] = [];
-		const overflowError = "Your input exceeds the context window of this model. Please adjust your input and try again.";
+		const overflowError =
+			"Your input exceeds the context window of this model. Please adjust your input and try again.";
 		const remoteSpy = vi.spyOn(ai, "compactOpenAICodexResponses").mockImplementation(async (_model, context) => {
 			seenMessageCounts.push(context.messages.length);
 			if (context.messages.length > 18) {
@@ -307,7 +308,8 @@ describe("AgentSession Codex remote compaction", () => {
 		seedLargeAssistantConversation(session, model, 24);
 
 		const seenMessageCounts: number[] = [];
-		const overflowError = "Your input exceeds the context window of this model. Please adjust your input and try again.";
+		const overflowError =
+			"Your input exceeds the context window of this model. Please adjust your input and try again.";
 		let retryThreshold: number | undefined;
 		const remoteSpy = vi.spyOn(ai, "compactOpenAICodexResponses").mockImplementation(async (_model, context) => {
 			seenMessageCounts.push(context.messages.length);
@@ -320,7 +322,9 @@ describe("AgentSession Codex remote compaction", () => {
 			return [
 				{
 					role: "user",
-					content: [{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" }],
+					content: [
+						{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" },
+					],
 					timestamp: Date.now(),
 				},
 			];
@@ -388,7 +392,9 @@ describe("AgentSession Codex remote compaction", () => {
 			return [
 				{
 					role: "user",
-					content: [{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" }],
+					content: [
+						{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" },
+					],
 					timestamp: Date.now(),
 				},
 			];
@@ -460,7 +466,9 @@ describe("AgentSession Codex remote compaction", () => {
 			return [
 				{
 					role: "user",
-					content: [{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" }],
+					content: [
+						{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" },
+					],
 					timestamp: Date.now(),
 				},
 			];
@@ -527,7 +535,9 @@ describe("AgentSession Codex remote compaction", () => {
 			return [
 				{
 					role: "user",
-					content: [{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" }],
+					content: [
+						{ type: "text", text: "Another language model started to solve this problem\n\nRecovered summary" },
+					],
 					timestamp: Date.now(),
 				},
 			];
@@ -569,7 +579,8 @@ describe("AgentSession Codex remote compaction", () => {
 		seedConversation(session, model);
 
 		const seenMessageCounts: number[] = [];
-		const overflowError = "Your input exceeds the context window of this model. Please adjust your input and try again.";
+		const overflowError =
+			"Your input exceeds the context window of this model. Please adjust your input and try again.";
 		const remoteSpy = vi.spyOn(ai, "compactOpenAICodexResponses").mockImplementation(async (_model, context) => {
 			seenMessageCounts.push(context.messages.length);
 			throw new Error(overflowError);

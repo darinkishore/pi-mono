@@ -55,7 +55,7 @@ function createSession(
 			keepRecentTokens: 20_000,
 		},
 	});
-	const authStorage = new AuthStorage(join(tempDir, "auth.json"));
+	const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 	authStorage.setRuntimeApiKey(model.provider, providerApiKey);
 	const modelRegistry = new ModelRegistry(authStorage, tempDir);
 
@@ -585,7 +585,7 @@ describe("AgentSession compaction semantics", () => {
 				_handleBeforeSampling: (
 					context: { messages: AgentMessage[] },
 					signal?: AbortSignal,
-				) => Promise<AgentMessage[] | void>;
+				) => Promise<AgentMessage[] | undefined>;
 			}
 		)._handleBeforeSampling;
 
@@ -634,7 +634,7 @@ describe("AgentSession compaction semantics", () => {
 				_handleBeforeSampling: (
 					context: { messages: AgentMessage[] },
 					signal?: AbortSignal,
-				) => Promise<AgentMessage[] | void>;
+				) => Promise<AgentMessage[] | undefined>;
 			}
 		)._handleBeforeSampling;
 

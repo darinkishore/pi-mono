@@ -8,8 +8,8 @@ import {
 	type ImageContent,
 	type Message,
 	type Model,
-	type SimpleStreamOptions,
 	type NativeCompactionConfig,
+	type SimpleStreamOptions,
 	streamSimple,
 	type TextContent,
 	type ThinkingBudgets,
@@ -58,7 +58,7 @@ export interface AgentOptions {
 	 * Optional hook invoked inline before each sampling request.
 	 * Return updated messages to replace the loop's context snapshot.
 	 */
-	beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>;
+	beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | undefined>;
 
 	/**
 	 * Steering mode: "all" = send all steering messages at once, "one-at-a-time" = one per turn
@@ -142,7 +142,7 @@ export class Agent {
 	private abortController?: AbortController;
 	private convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	private transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
-	private _beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>;
+	private _beforeSampling?: (context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | undefined>;
 	private steeringQueue: AgentMessage[] = [];
 	private followUpQueue: AgentMessage[] = [];
 	private steeringMode: "all" | "one-at-a-time";
@@ -206,7 +206,7 @@ export class Agent {
 	 * Get the current before-sampling hook.
 	 */
 	get beforeSampling():
-		| ((context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>)
+		| ((context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | undefined>)
 		| undefined {
 		return this._beforeSampling;
 	}
@@ -214,9 +214,9 @@ export class Agent {
 	/**
 	 * Set the before-sampling hook.
 	 */
-	set beforeSampling(
-		value: ((context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | void>) | undefined,
-	) {
+	set beforeSampling(value:
+		| ((context: AgentContext, signal?: AbortSignal) => Promise<AgentMessage[] | undefined>)
+		| undefined,) {
 		this._beforeSampling = value;
 	}
 
